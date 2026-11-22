@@ -1,109 +1,127 @@
-// Ember Pact boot + input. Click a card to select it, click again (or the
-// PLAY CARD button, or Enter/Space) to play it. Keys 1-5 select, R restarts.
-// ?shot=title|table|win|loss&seed=N renders a deterministic screenshot state
-// with no interactivity.
-import { newGame, playCard } from './game.js';
-import { renderAll, renderTitleElements, showTitle, showTable, hideEnd } from './render.js';
-import { stateForShot } from './shots.js';
-import { sfx, setMuted, isMuted } from './sound.js';
+// Bootstrap for Ember Pact: wire clicks, keys and sound to the rules engine,
+// and stage screenshot scenes when the page is opened with ?shot=.
+//
+// Normal play: title -> table -> win/loss, with a Pact picker overlay when a
+// wild is played. Shot mode renders one frozen scene for the camera.
 
-const params = new URLSearchParams(location.search);
-const shot = params.get('shot');
-const seed = Number(params.get('seed') || '7');
+import { PHASE_OVER, PHASE_PICK, PHASE_PLAY, PHASE_TITLE, cancelPactPick, newGame, playPlayerCard, startGame } from './game.js';
+import { renderGame } from './render.js';
+import { stageShot } from './shots.js';
+import { isMuted, setMuted, soundClick, soundDamage, soundDraw, soundLose, soundPlay, soundWin } from './sound.js';
 
-let state = null;
-let selected = -1;
-let resolving = false;
-
-function startGame(seedValue) {
-  state = newGame(seedValue);
-  selected = -1;
-  resolving = false;
-  hideEnd();
-  showTable();
-  renderAll(state, { selected, onCard: onCardClick, onPlay: onPlayClick });
+function seedFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const raw = Number(params.get('seed'));
+  return Number.isFinite(raw) ? raw : 7;
 }
 
-function onCardClick(index) {
-  if (!state || state.phase !== 'playing' || resolving) return;
-  if (index === selected) {
-    onPlayClick();
+function playSoundFor(game, result) {
+  if (!result || result.needsPick) return;
+  if (game.phase === PHASE_OVER) {
+    if (game.winner === 'player') soundWin();
+    else soundLose();
     return;
   }
-  selected = index;
-  sfx.select();
-  renderAll(state, { selected, onCard: onCardClick, onPlay: onPlayClick });
+  if (result.winner === 'tie') soundClick();
+  else soundDamage();
+  soundDraw();
 }
 
-function onPlayClick() {
-  if (!state || state.phase !== 'playing' || resolving) return;
-  if (selected < 0) return;
-  resolving = true;
-  const trick = playCard(state, selected);
-  selected = -1;
-  if (!trick) {
-    resolving = false;
+function main() {
+  const params = new URLSearchParams(window.location.search);
+  const shot = params.get('shot');
+  const app = document.getElementById('app');
+
+  if (shot) {
+    // Screenshot mode: stage the scene, freeze the motion, render once.
+    document.body.classList.add('shot');
+    const staged = stageShot(shot, seedFromUrl());
+    const game = staged.game;
+    game.muted = true;
+    renderGame(game, {
+      onStart() {},
+      onRestart() {},
+      onMute() {},
+      onCancelPick() {},
+      onPlayCard() {},
+      onPickElement() {},
+    });
+    window.__emberPact = game;
     return;
   }
-  if (trick.winner === 'player') {
-    if (trick.surge) sfx.surge();
-    else sfx.play();
-  } else if (trick.winner === 'rook') {
-    sfx.hurt();
-  } else {
-    sfx.clash();
-  }
-  const flash = trick.winner === 'player' ? 'rook' : trick.winner === 'rook' ? 'player' : null;
-  renderAll(state, { selected, onCard: onCardClick, onPlay: onPlayClick, flash });
-  window.setTimeout(() => {
-    resolving = false;
-    if (state.phase === 'over') {
-      if (state.winner === 'player') sfx.win();
-      else sfx.loss();
+
+  let game = newGame(Date.now() % 2147483647);
+  game.muted = isMuted();
+
+  const handlers = {
+    onStart() {
+      soundClick();
+      startGame(game);
+      renderGame(game, handlers);
+    },
+    onRestart() {
+      soundClick();
+      game = newGame(Date.now() % 2147483647);
+      game.muted = isMuted();
+      startGame(game);
+      renderGame(game, handlers);
+    },
+    onMute() {
+      setMuted(!isMuted());
+      game.muted = isMuted();
+      renderGame(game, handlers);
+    },
+    onCancelPick() {
+      soundClick();
+      cancelPactPick(game);
+      renderGame(game, handlers);
+    },
+    onPlayCard(index) {
+      if (game.phase !== PHASE_PLAY) return;
+      const result = playPlayerCard(game, index, null);
+      if (result && result.needsPick) {
+        soundClick();
+        renderGame(game, handlers);
+        return;
+      }
+      if (!result) return;
+      soundPlay();
+      playSoundFor(game, result);
+      renderGame(game, handlers);
+    },
+    onPickElement(element) {
+      if (game.phase !== PHASE_PICK) return;
+      const index = game.pendingPact;
+      const result = playPlayerCard(game, index, element);
+      if (!result) return;
+      soundPlay();
+      playSoundFor(game, result);
+      renderGame(game, handlers);
+    },
+  };
+
+  renderGame(game, handlers);
+
+  window.addEventListener('keydown', (event) => {
+    if (event.key === 'm' || event.key === 'M') {
+      handlers.onMute();
+      return;
     }
-    renderAll(state, { selected, onCard: onCardClick, onPlay: onPlayClick });
-  }, 900);
+    if (game.phase === PHASE_TITLE && (event.key === 'Enter' || event.key === ' ')) {
+      handlers.onStart();
+      return;
+    }
+    if (game.phase === PHASE_OVER && event.key === 'Enter') {
+      handlers.onRestart();
+      return;
+    }
+    if (game.phase === PHASE_PLAY) {
+      const slot = Number(event.key);
+      if (slot >= 1 && slot <= game.playerHand.length) handlers.onPlayCard(slot - 1);
+    }
+  });
+
+  window.__emberPact = game;
 }
 
-function bindControls() {
-  document.getElementById('play-btn').addEventListener('click', () => {
-    sfx.play();
-    startGame();
-  });
-  document.getElementById('again-btn').addEventListener('click', () => {
-    sfx.play();
-    startGame();
-  });
-  document.getElementById('sound-btn').addEventListener('click', (event) => {
-    setMuted(!isMuted());
-    event.currentTarget.textContent = isMuted() ? 'Sound: off' : 'Sound: on';
-  });
-  document.addEventListener('keydown', (event) => {
-    if (!state || state.phase !== 'playing') return;
-    if (event.key >= '1' && event.key <= '5') {
-      const index = Number(event.key) - 1;
-      if (index < state.playerHand.length) onCardClick(index);
-    } else if (event.key === 'Enter' || event.key === ' ') {
-      event.preventDefault();
-      onPlayClick();
-    } else if (event.key === 'r' || event.key === 'R') {
-      startGame();
-    }
-  });
-}
-
-renderTitleElements();
-bindControls();
-if (shot && shot !== 'title') {
-  const scripted = stateForShot(shot, seed);
-  if (scripted) {
-    state = scripted.state;
-    document.getElementById('app').classList.add('frozen');
-    showTable();
-    renderAll(state, { selected: scripted.selected });
-  } else {
-    showTitle();
-  }
-} else {
-  showTitle();
-}
+main();

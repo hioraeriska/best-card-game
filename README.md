@@ -1,53 +1,50 @@
-# Ember Pact — Duel of the Four Winds
+# Ember Pact — a duel of the four winds
 
-![Best card game](https://make.fun/badge/best-card-game-20261122-1826.svg)
-![Rank](https://make.fun/badge/best-card-game-20261122-1826/hioraeriska/best-card-game/rank.svg)
-![Reward](https://make.fun/badge/best-card-game-20261122-1826/hioraeriska/best-card-game/reward.svg)
+A card game for the make.fun best-card-game bounty. You against Rook the
+Cinder Fox, 30 life each, one 40-card pact deck: four elements (Ember, Gale,
+Tide, Stone) at values 1–9, plus four Pact wilds.
 
-An original card duel for the [best card game bounty](https://make.fun/bounty/best-card-game-20261122-1826) on make.fun.
+## Rules
 
-## The game
+- Each trick, both sides play a card. Power is value +3 when your element
+  beats the other on the wheel: Ember > Gale > Tide > Ember. Stone is neutral.
+- The trick winner deals damage equal to the power gap (at least 1).
+- **Surge:** win two tricks in a row to arm Surge — your next win deals +2.
+  Losing a trick disarms it.
+- **Chain:** win a trick with the same element as the last trick's winning
+  element and bank +1 chain damage.
+- **Pact wilds:** playing one opens a picker — you choose its element.
+- **Rook's tell:** Rook shows a gathering badge naming the element it is
+  most likely to play next (true about 7 times in 10). Your cards that beat
+  the telegraphed element glow gold.
+- Hands refill to five cards after each trick until the decks run out. The
+  higher life wins when the decks are spent.
 
-You face **Rook the Cinder Fox** across a green felt table. You both start at
-30 life. Each trick you play one card from your five-card hand; Rook plays one
-face-down, and the two are revealed together.
-
-- **Four winds, one wheel.** Ember beats Gale, Gale beats Tide, Tide beats
-  Ember; Stone is neutral. A winning element adds **+3 power**.
-- **Pact wilds** (value 6) become the element that beats your rival's card.
-- **Surge.** Win two tricks in a row to arm Surge — your next win deals
-  **+2 damage**.
-- **Telegraph.** Before you play, Rook lets slip a hint about the element it
-  favours. It tells the truth most of the time — read it, counter it, and
-  don't trust it blindly.
-
-Higher power wins the trick; the loser loses life equal to the difference
-(at least 1 on a win; a tie is a clash). First to 0 life loses.
-
-## Controls
-
-Click a card to select, click again to play · Keys 1–5 select · Enter/Space
-plays · R restarts. Procedural Web Audio blips, no audio files, no network.
-
-## Play it
+## Run it
 
 ```sh
 node serve.ts
 # open http://localhost:8080
 ```
 
-Deterministic screenshot states: `?shot=title|table|win|loss&seed=N`.
+Click a card to play it (keys 1–5 work too), M mutes the sound, Enter starts
+and restarts. Screenshot scenes: `?shot=title|table|win|loss&seed=N`.
 
-## Hand-in
-
-`main.ts` (Node 22, standard library only) copies `game/` and `screenshots/`
-to `/output` and writes `/output/dossier.json` with the vendored make.fun
-library:
+## Hand in
 
 ```sh
 mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 ```
 
-## License
+`main.ts` copies `game/` and `screenshots/` to the output directory and
+writes `dossier.json` with the vendored make.fun library.
 
-MIT — see [LICENSE](LICENSE).
+## Layout
+
+- `game/src/deck.js` — deck, elements, wheel, power
+- `game/src/ai.js` — Rook's choices, its tell, and the autopilot
+- `game/src/game.js` — rules engine: tricks, Surge, chains, the log
+- `game/src/render.js` — the table, cards, screens
+- `game/src/sound.js` — synthesized Web Audio blips
+- `game/src/shots.js` — screenshot scenes
+- `game/src/main.js` — bootstrap, input, shot mode

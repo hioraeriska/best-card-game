@@ -1,10 +1,10 @@
 // A tiny static server for game/ (Node 22, standard library only), so the
-// entry can be played locally with no build step:
+// entry can be played locally without a build step:
 //   node serve.ts            serves game/ on http://localhost:8080
-//   node serve.ts --port N   serves game/ on http://localhost:N
-// It sends the MIME types a browser game needs, refuses any path outside
-// game/, and does nothing clever: a development convenience, not a web
-// server for the internet.
+//   node serve.ts --port 8090 serves it on another port instead.
+// It sends the MIME types a browser game needs and refuses any path outside
+// game/. A development convenience, not a web server for the internet.
+
 import { createReadStream, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { extname, join, normalize, resolve, sep } from 'node:path';
@@ -12,8 +12,8 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(fileURLToPath(new URL('./game', import.meta.url)));
 const args = process.argv.slice(2);
-const portFlag = args.indexOf('--port');
-const wanted = portFlag === -1 ? 8080 : Number(args[portFlag + 1]);
+const portIndex = args.indexOf('--port');
+const wanted = portIndex === -1 ? 8080 : Number(args[portIndex + 1]);
 const port = Number.isInteger(wanted) && wanted > 0 && wanted < 65536 ? wanted : 8080;
 
 const MIME = {
@@ -25,7 +25,14 @@ const MIME = {
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
   '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+  '.woff2': 'font/woff2',
+  '.wav': 'audio/wav',
+  '.mp3': 'audio/mpeg',
+  '.ogg': 'audio/ogg',
   '.txt': 'text/plain; charset=utf-8',
 };
 

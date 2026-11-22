@@ -1,116 +1,59 @@
-// Deterministic screenshot states: ?shot=title|table|win|loss&seed=N
-// renders a fixed, seeded moment of the game — a real render of the game's
-// own code, never an edited image. The table shot shows a mid-duel state
-// with Surge armed; win/loss show the end overlay over the table.
-import { newGame } from './game.js';
-import { makeCard } from './deck.js';
+// Screenshot scenes for Ember Pact: ?shot=title|table|win|loss&seed=N.
+// Each scene plays the real rules forward from a fresh game with a fixed
+// seed, steered by the autopilot, so the frame is what a real game looks
+// like and the same seed always gives the same frame. The win and loss
+// scenes keep replaying fresh seeds until the side they need has won.
 
-function midDuel(state) {
-  state.playerLife = 20;
-  state.rookLife = 18;
-  state.round = 6;
-  state.tricksWon = 3;
-  state.tricksLost = 2;
-  state.damageDealt = 12;
-  state.damageTaken = 10;
-  state.streak = 2;
-  state.surgeArmed = true;
-  state.playerHand = [
-    makeCard('ember', 8),
-    makeCard('tide', 5),
-    makeCard('gale', 9),
-    makeCard('stone', 4),
-    makeCard('pact', 6, true),
-  ];
-  state.rookHand = [
-    makeCard('ember', 3),
-    makeCard('gale', 6),
-    makeCard('tide', 7),
-    makeCard('stone', 8),
-    makeCard('ember', 5),
-  ];
-  state.lastTrick = {
-    playerCard: makeCard('tide', 9),
-    rookCard: makeCard('ember', 6),
-    playerPower: 12,
-    rookPower: 6,
-    playerAdvantage: true,
-    rookAdvantage: false,
-    winner: 'player',
-    damage: 6,
-    surge: false,
-    text: 'Round 5 — You played Tide 9 (12) vs Rook\'s Ember 6 (6). You win the trick, Rook −6.',
-  };
-  state.rookPlanned = makeCard('tide', 6);
-  state.telegraph = { element: 'tide', bluff: false, text: '' };
-  state.log = [
-    'Round 5 — You played Tide 9 (12) vs Rook\'s Ember 6 (6). You win the trick, Rook −6.',
-    'Round 4 — You played Stone 8 (8) vs Rook\'s Gale 7 (7). You win the trick, Rook −1.',
-    'Round 3 — Rook played Ember 7 (10) vs your Gale 5 (5). Rook wins the trick, you −5.',
-    'Round 2 — You played Gale 8 (11) vs Rook\'s Tide 6 (6). You win the trick, Rook −5.',
-    'Round 1 — Rook played Tide 6 (9) vs your Ember 4 (4). Rook wins the trick, you −5.',
-  ];
-  return state;
+import { PHASE_OVER, PHASE_PLAY, newGame, playFullGame, playPlayerCard, startGame } from './game.js';
+import { autopilotPick } from './ai.js';
+
+// Play a fixed number of tricks with the autopilot, then leave the next
+// trick open (Rook has chosen, the player has not) for a mid-game table.
+function playTricks(game, count) {
+  let done = 0;
+  let guard = 0;
+  while (done < count && game.phase === PHASE_PLAY && guard < 200) {
+    guard += 1;
+    if (!game.trick || game.trick.playerCard) continue;
+    const pick = autopilotPick(game.playerHand, game.rookHint);
+    const index = game.playerHand.indexOf(pick.card);
+    if (index === -1) break;
+    const before = game.trickCount;
+    const result = playPlayerCard(game, index, pick.chosenElement);
+    if (!result || result.needsPick) break;
+    if (game.trickCount > before) done += 1;
+  }
+  return game;
 }
 
-// Build the state for a shot name. Returns null for 'title' (no table state).
-export function stateForShot(shot, seed) {
-  if (shot === 'table') {
-    return { state: midDuel(newGame(seed)), selected: 2 };
+// Find a finished game, over seeds, whose winner is the side we need.
+function findFinishedGame(wantWinner, startSeed) {
+  let last = null;
+  for (let seed = startSeed; seed < startSeed + 60; seed += 1) {
+    last = playFullGame(seed);
+    if (last.phase === PHASE_OVER && last.winner === wantWinner) return last;
   }
-  if (shot === 'win') {
-    const state = midDuel(newGame(seed));
-    state.rookLife = 0;
-    state.playerLife = 22;
-    state.round = 9;
-    state.tricksWon = 8;
-    state.tricksLost = 4;
-    state.damageDealt = 30;
-    state.damageTaken = 8;
-    state.streak = 0;
-    state.surgeArmed = false;
-    state.lastTrick = {
-      playerCard: makeCard('ember', 9),
-      rookCard: makeCard('gale', 2),
-      playerPower: 12,
-      rookPower: 2,
-      playerAdvantage: true,
-      rookAdvantage: false,
-      winner: 'player',
-      damage: 10,
-      surge: true,
-      text: 'Round 8 — You played Ember 9 (12) vs Rook\'s Gale 2 (2). You win the trick, Rook −10. Surge strikes!',
-    };
-    state.phase = 'over';
-    state.winner = 'player';
-    return { state, selected: -1 };
+  // Fallback: the last game played, whatever its winner.
+  return last;
+}
+
+export function stageShot(name, seed) {
+  const base = Number.isFinite(seed) ? seed : 7;
+  if (name === 'table') {
+    const game = newGame(base);
+    startGame(game);
+    playTricks(game, 6);
+    return { game, screen: PHASE_PLAY };
   }
-  if (shot === 'loss') {
-    const state = midDuel(newGame(seed));
-    state.playerLife = 0;
-    state.rookLife = 14;
-    state.round = 8;
-    state.tricksWon = 3;
-    state.tricksLost = 7;
-    state.damageDealt = 16;
-    state.damageTaken = 30;
-    state.streak = 0;
-    state.surgeArmed = false;
-    state.lastTrick = {
-      playerCard: makeCard('stone', 4),
-      rookCard: makeCard('tide', 9),
-      playerPower: 4,
-      rookPower: 12,
-      playerAdvantage: false,
-      rookAdvantage: true,
-      winner: 'rook',
-      damage: 8,
-      surge: false,
-      text: 'Round 7 — Rook played Tide 9 (12) vs your Stone 4 (4). Rook wins the trick, you −8.',
-    };
-    state.phase = 'over';
-    state.winner = 'rook';
-    return { state, selected: -1 };
+  if (name === 'win') {
+    const game = findFinishedGame('player', base);
+    return { game, screen: PHASE_OVER };
   }
-  return null;
+  if (name === 'loss') {
+    const game = findFinishedGame('rook', base);
+    return { game, screen: PHASE_OVER };
+  }
+  // Title (and anything unknown): a fresh world, never started.
+  const game = newGame(base);
+  return { game, screen: 'title' };
 }

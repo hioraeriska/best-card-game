@@ -1,180 +1,264 @@
-// Ember Pact rules and state machine.
-// You vs Rook the Cinder Fox, both at 30 life. Each trick you play one card
-// from your 5-card hand; Rook plays one face-down, revealed together.
-// Power = value + 3 when your element beats theirs. Higher power wins the
-// trick; the loser loses life equal to the power difference (at least 1 on
-// a win; a tie is a clash, no damage). Win two tricks in a row to arm
-// Surge — your next trick win deals +2 damage. Hands refill to 5 after
-// each trick; the deck reshuffles from the discard when empty.
-import { buildDeck, shuffle, mulberry32, elementBeats, effectiveElement, ELEMENTS } from './deck.js';
-import { chooseRookCard, makeTelegraph } from './ai.js';
+// The rules engine for Ember Pact: state, tricks, Surge, chains and the log.
+// This file knows nothing about the DOM; render.js draws whatever it holds,
+// and shots.js / logic tests drive it headlessly.
+//
+// A trick: both sides play one card. Power is value + 3 on a wheel advantage.
+// The trick winner deals damage equal to the power difference (at least 1).
+// Two rules stack on top of that:
+//   Chain  — win a trick with the same element as the previous trick's
+//            winning element and the win banks +1 chain damage.
+//   Surge  — win two tricks in a row and Surge arms: the next win deals +2
+//            damage, then Surge is spent. Losing a trick disarms it.
+// A Pact wild is played with an element its player chose, so it can join a
+// chain or ride the wheel on purpose.
 
-export const START_LIFE = 30;
-export const HAND_SIZE = 5;
-export const SURGE_BONUS = 2;
-export const ADVANTAGE_BONUS = 3;
+import {
+  ELEMENTS,
+  HAND_SIZE,
+  START_LIFE,
+  buildDeck,
+  cardPower,
+  mulberry32,
+  shuffle,
+  tableElement,
+} from './deck.js';
+import { autopilotPick, choosePactElement, chooseRookPlay } from './ai.js';
+
+export const PHASE_TITLE = 'title';
+export const PHASE_PLAY = 'play';
+export const PHASE_PICK = 'pick';
+export const PHASE_OVER = 'over';
 
 export function newGame(seed) {
-  const seedValue = seed === undefined || seed === null
-    ? (Date.now() % 2147483647)
-    : seed;
-  const rng = mulberry32(seedValue);
-  const state = {
-    seed: seedValue,
+  const rng = mulberry32(seed);
+  const deck = shuffle(buildDeck(), rng);
+  const game = {
+    seed,
     rng,
-    deck: shuffle(buildDeck(), rng),
-    discard: [],
-    playerHand: [],
-    rookHand: [],
+    phase: PHASE_TITLE,
     playerLife: START_LIFE,
     rookLife: START_LIFE,
-    round: 1,
-    tricksWon: 0,
-    tricksLost: 0,
-    damageDealt: 0,
-    damageTaken: 0,
-    streak: 0,
-    surgeArmed: false,
-    rookPlanned: null,
-    telegraph: null,
-    lastTrick: null,
-    phase: 'playing', // 'playing' | 'over'
-    winner: null, // 'player' | 'rook'
+    playerDeck: deck.slice(0, 20),
+    rookDeck: deck.slice(20),
+    playerHand: [],
+    rookHand: [],
+    trick: null,
+    trickCount: 0,
+    lastWinElement: null,
+    chainCount: 0,
+    playerStreak: 0,
+    rookStreak: 0,
+    playerSurge: false,
+    rookSurge: false,
+    rookHint: null,
+    pendingPact: null,
+    winner: null,
+    lastDamage: null,
     log: [],
-    memory: { playerElements: {} },
   };
-  drawUp(state, 'player');
-  drawUp(state, 'rook');
-  planRook(state);
-  return state;
+  dealHands(game);
+  return game;
 }
 
-export function drawUp(state, who) {
-  const hand = who === 'player' ? state.playerHand : state.rookHand;
-  while (hand.length < HAND_SIZE) {
-    if (state.deck.length === 0) {
-      if (state.discard.length === 0) break;
-      state.deck = shuffle(state.discard, state.rng);
-      state.discard = [];
+function dealHands(game) {
+  for (let i = 0; i < HAND_SIZE; i += 1) {
+    game.playerHand.push(game.playerDeck.pop());
+    game.rookHand.push(game.rookDeck.pop());
+  }
+}
+
+export function startGame(game) {
+  game.phase = PHASE_PLAY;
+  game.log.push('The pact is sealed. Rook the Cinder Fox shuffles in.');
+  beginTrick(game);
+  return game;
+}
+
+// Open a trick: Rook picks its card (and its hint) now, before the player
+// chooses, so the trick is simultaneous.
+export function beginTrick(game) {
+  if (game.phase !== PHASE_PLAY) return;
+  if (game.playerHand.length === 0 || game.rookHand.length === 0) {
+    finishByExhaustion(game);
+    return;
+  }
+  const play = chooseRookPlay(game.rookHand, game.rng);
+  game.rookHint = play.hint;
+  game.trick = {
+    rookCard: play.card,
+    rookHintTrue: play.hintTrue,
+    playerCard: null,
+    result: null,
+  };
+}
+
+// The player lays a card. A Pact wild pauses the trick for an element pick.
+export function playPlayerCard(game, handIndex, chosenElement) {
+  if (game.phase !== PHASE_PLAY || !game.trick || game.trick.playerCard) return null;
+  const card = game.playerHand[handIndex];
+  if (!card) return null;
+  if (card.pact && !chosenElement) {
+    game.pendingPact = handIndex;
+    game.phase = PHASE_PICK;
+    return { needsPick: true };
+  }
+  if (card.pact) card.chosenElement = chosenElement;
+  game.playerHand.splice(handIndex, 1);
+  game.trick.playerCard = card;
+  game.pendingPact = null;
+  return resolveTrick(game);
+}
+
+export function cancelPactPick(game) {
+  if (game.phase !== PHASE_PICK) return;
+  game.pendingPact = null;
+  game.phase = PHASE_PLAY;
+}
+
+function resolveTrick(game) {
+  const trick = game.trick;
+  const rookCard = trick.rookCard;
+  if (rookCard.pact) rookCard.chosenElement = choosePactElement(game.rng);
+  const playerPower = cardPower(trick.playerCard, rookCard);
+  const rookPower = cardPower(rookCard, trick.playerCard);
+  const playerEl = tableElement(trick.playerCard);
+  const rookEl = tableElement(rookCard);
+
+  let winner;
+  let damage;
+  let notes = [];
+  if (playerPower === rookPower) {
+    // A tied trick deals no damage and breaks both streaks.
+    winner = 'tie';
+    damage = 0;
+    game.playerStreak = 0;
+    game.rookStreak = 0;
+    game.playerSurge = false;
+    game.rookSurge = false;
+    game.lastWinElement = null;
+    notes.push('Dead even — no damage, both streaks broken.');
+  } else {
+    winner = playerPower > rookPower ? 'player' : 'rook';
+    const winEl = winner === 'player' ? playerEl : rookEl;
+    damage = Math.abs(playerPower - rookPower);
+    if (damage < 1) damage = 1;
+    // Chain: same winning element as the last trick's winner.
+    if (game.lastWinElement && game.lastWinElement === winEl) {
+      damage += 1;
+      game.chainCount += 1;
+      notes.push(`Chain ${game.chainCount} — ${ELEMENTS[winEl].name} strikes again (+1).`);
+    } else {
+      game.chainCount = 0;
     }
-    hand.push(state.deck.pop());
+    game.lastWinElement = winEl;
+    // Surge: armed by two straight wins, spent on the next one.
+    if (winner === 'player') {
+      if (game.playerSurge) {
+        damage += 2;
+        game.playerSurge = false;
+        game.playerStreak = 0;
+        notes.push('Surge unleashed (+2).');
+      } else {
+        game.playerStreak += 1;
+        if (game.playerStreak >= 2) game.playerSurge = true;
+      }
+      game.rookStreak = 0;
+      game.rookSurge = false;
+      game.rookLife -= damage;
+    } else {
+      if (game.rookSurge) {
+        damage += 2;
+        game.rookSurge = false;
+        game.rookStreak = 0;
+        notes.push('Rook\'s Surge unleashed (+2).');
+      } else {
+        game.rookStreak += 1;
+        if (game.rookStreak >= 2) game.rookSurge = true;
+      }
+      game.playerStreak = 0;
+      game.playerSurge = false;
+      game.playerLife -= damage;
+    }
   }
-}
 
-// Rook commits its face-down card for the trick and lets slip a hint.
-export function planRook(state) {
-  state.rookPlanned = chooseRookCard(state.rookHand, state.memory, state.rng);
-  state.telegraph = state.rookPlanned
-    ? makeTelegraph(state.rookPlanned, state.rng)
-    : null;
-}
-
-// Power of `card` against `opponentCard`, with the element advantage.
-export function trickPower(card, opponentCard) {
-  let power = card.value;
-  let advantage = false;
-  if (card.pact && !opponentCard.pact) {
-    advantage = effectiveElement(card, opponentCard) !== null;
-  } else if (!card.pact && !opponentCard.pact) {
-    advantage = elementBeats(card.element, opponentCard.element);
-  }
-  if (advantage) power += ADVANTAGE_BONUS;
-  return { power, advantage };
-}
-
-export function cardLabel(card) {
-  if (card.pact) return `Pact ${card.value}`;
-  return `${ELEMENTS[card.element].name} ${card.value}`;
-}
-
-// Play the card at `handIndex` from the player's hand and resolve the trick.
-// Returns the trick record, or null when the game is not accepting plays.
-export function playCard(state, handIndex) {
-  if (state.phase !== 'playing') return null;
-  if (handIndex < 0 || handIndex >= state.playerHand.length) return null;
-  if (!state.rookPlanned) return null;
-  const playerCard = state.playerHand.splice(handIndex, 1)[0];
-  const rookIndex = state.rookHand.indexOf(state.rookPlanned);
-  const rookCard = rookIndex >= 0
-    ? state.rookHand.splice(rookIndex, 1)[0]
-    : state.rookPlanned;
-  const trick = resolveTrick(state, playerCard, rookCard);
-  state.discard.push(playerCard, rookCard);
-  state.lastTrick = trick;
-  state.log.unshift(trick.text);
-  if (state.log.length > 6) state.log.length = 6;
-  state.round += 1;
-  drawUp(state, 'player');
-  drawUp(state, 'rook');
-  if (state.rookLife <= 0) {
-    state.phase = 'over';
-    state.winner = 'player';
-  } else if (state.playerLife <= 0) {
-    state.phase = 'over';
-    state.winner = 'rook';
-  } else {
-    planRook(state);
-  }
-  return trick;
-}
-
-function resolveTrick(state, playerCard, rookCard) {
-  const mine = trickPower(playerCard, rookCard);
-  const theirs = trickPower(rookCard, playerCard);
-  const surgeUsed = state.surgeArmed;
-  let winner = 'clash';
-  let damage = 0;
-  if (mine.power > theirs.power) {
-    winner = 'player';
-    damage = Math.max(1, mine.power - theirs.power) + (surgeUsed ? SURGE_BONUS : 0);
-    state.rookLife = Math.max(0, state.rookLife - damage);
-    state.tricksWon += 1;
-    state.damageDealt += damage;
-    state.streak = surgeUsed ? 0 : state.streak + 1;
-    state.surgeArmed = !surgeUsed && state.streak >= 2;
-  } else if (theirs.power > mine.power) {
-    winner = 'rook';
-    damage = Math.max(1, theirs.power - mine.power);
-    state.playerLife = Math.max(0, state.playerLife - damage);
-    state.tricksLost += 1;
-    state.damageTaken += damage;
-    state.streak = 0;
-    state.surgeArmed = false;
-  } else {
-    state.streak = 0;
-    state.surgeArmed = false;
-  }
-  const played = playerCard.pact ? 'pact' : playerCard.element;
-  state.memory.playerElements[played] = (state.memory.playerElements[played] || 0) + 1;
-  state.memory.playerFavElement = favElement(state.memory.playerElements);
-  const text = trickText(state, playerCard, rookCard, mine, theirs, winner, damage, surgeUsed);
-  return {
-    playerCard, rookCard,
-    playerPower: mine.power, rookPower: theirs.power,
-    playerAdvantage: mine.advantage, rookAdvantage: theirs.advantage,
-    winner, damage, surge: surgeUsed, text,
+  const result = {
+    winner,
+    damage,
+    playerPower,
+    rookPower,
+    playerElement: playerEl,
+    rookElement: rookEl,
+    notes,
   };
+  trick.result = result;
+  game.trickCount += 1;
+  game.lastDamage = { winner, damage };
+  const pName = ELEMENTS[playerEl].name;
+  const rName = ELEMENTS[rookEl].name;
+  if (winner === 'tie') {
+    game.log.push(`Trick ${game.trickCount}: ${pName} ${playerPower} meets ${rName} ${rookPower} — a tie.`);
+  } else {
+    const who = winner === 'player' ? 'You take' : 'Rook takes';
+    game.log.push(
+      `Trick ${game.trickCount}: ${pName} ${playerPower} vs ${rName} ${rookPower} — ${who} the trick, ${damage} damage.`,
+    );
+  }
+  for (const note of notes) game.log.push(note);
+  if (game.playerLife <= 0 || game.rookLife <= 0) {
+    game.winner = game.rookLife <= 0 ? 'player' : 'rook';
+    game.phase = PHASE_OVER;
+    game.log.push(game.winner === 'player' ? 'Rook\'s ember gutters out. You win the pact!' : 'Your ember gutters out. Rook wins the pact.');
+    return result;
+  }
+  drawUp(game);
+  return result;
 }
 
-function favElement(counts) {
-  let best = null;
-  let bestCount = 0;
-  for (const el of Object.keys(counts)) {
-    if (counts[el] > bestCount) { best = el; bestCount = counts[el]; }
+// Refill each hand toward five cards after a trick.
+function drawUp(game) {
+  while (game.playerHand.length < HAND_SIZE && game.playerDeck.length > 0) {
+    game.playerHand.push(game.playerDeck.pop());
   }
-  return best;
+  while (game.rookHand.length < HAND_SIZE && game.rookDeck.length > 0) {
+    game.rookHand.push(game.rookDeck.pop());
+  }
+  game.trick = null;
+  beginTrick(game);
 }
 
-function trickText(state, playerCard, rookCard, mine, theirs, winner, damage, surgeUsed) {
-  const round = state.round;
-  const mineLabel = `${cardLabel(playerCard)} (${mine.power})`;
-  const theirsLabel = `${cardLabel(rookCard)} (${theirs.power})`;
-  if (winner === 'player') {
-    const surge = surgeUsed ? ' Surge strikes!' : '';
-    return `Round ${round} — You played ${mineLabel} vs Rook's ${theirsLabel}. You win the trick, Rook −${damage}.${surge}`;
+// No cards left anywhere: the higher life wins the pact.
+function finishByExhaustion(game) {
+  game.phase = PHASE_OVER;
+  if (game.playerLife === game.rookLife) {
+    game.winner = 'player';
+    game.log.push('Decks spent, lives level — the pact favours the bold. You win!');
+  } else {
+    game.winner = game.playerLife > game.rookLife ? 'player' : 'rook';
+    game.log.push(game.winner === 'player' ? 'Decks spent — your ember burns brighter. You win!' : 'Decks spent — Rook\'s ember burns brighter. Rook wins.');
   }
-  if (winner === 'rook') {
-    return `Round ${round} — Rook played ${theirsLabel} vs your ${mineLabel}. Rook wins the trick, you −${damage}.`;
+}
+
+// A full headless game, used by logic tests and screenshot staging. The
+// autopilot plays the player's hand; Rook plays by its own rules.
+export function playFullGame(seed, playerChooses) {
+  const game = newGame(seed);
+  startGame(game);
+  const choose = playerChooses || null;
+  let guard = 0;
+  while (game.phase === PHASE_PLAY && guard < 200) {
+    guard += 1;
+    const pick = choose
+      ? choose(game)
+      : defaultPlayerPick(game);
+    if (!pick) break;
+    playPlayerCard(game, pick.index, pick.chosenElement);
   }
-  return `Round ${round} — ${mineLabel} meets ${theirsLabel}. Clash! No damage.`;
+  return game;
+}
+
+function defaultPlayerPick(game) {
+  if (!game.trick || game.playerHand.length === 0) return null;
+  const pick = autopilotPick(game.playerHand, game.rookHint);
+  const index = game.playerHand.indexOf(pick.card);
+  return { index, chosenElement: pick.chosenElement };
 }
