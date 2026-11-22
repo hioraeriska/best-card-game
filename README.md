@@ -1,50 +1,35 @@
-# Ember Pact — a duel of the four winds
+[![make.fun · best-card-game-20261122-1826](https://make.fun/badge/best-card-game-20261122-1826.svg)](https://make.fun/bounty/best-card-game-20261122-1826?utm_source=github&utm_medium=readme&utm_campaign=best-card-game-20261122-1826)
+[![rank](https://make.fun/badge/best-card-game-20261122-1826/hioraeriska/best-card-game/rank.svg)](https://make.fun/bounty/best-card-game-20261122-1826/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=best-card-game-20261122-1826)
+[![reward](https://make.fun/badge/best-card-game-20261122-1826/hioraeriska/best-card-game/reward.svg)](https://make.fun/bounty/best-card-game-20261122-1826?utm_source=github&utm_medium=readme&utm_campaign=best-card-game-20261122-1826)
 
-A card game for the make.fun best-card-game bounty. You against Rook the
-Cinder Fox, 30 life each, one 40-card pact deck: four elements (Ember, Gale,
-Tide, Stone) at values 1–9, plus four Pact wilds.
+# Ember Pact v2 — duel of the four winds
 
-## Rules
+An original card game built for the [best card game bounty on make.fun](https://make.fun/bounty/best-card-game-20261122-1826). You duel Rook the Cinder Fox, 30 life each, with a deck of four elements — Ember, Gale, Tide and Stone — values 1–9, plus 4 Pact wilds.
 
-- Each trick, both sides play a card. Power is value +3 when your element
-  beats the other on the wheel: Ember > Gale > Tide > Ember. Stone is neutral.
-- The trick winner deals damage equal to the power gap (at least 1).
-- **Surge:** win two tricks in a row to arm Surge — your next win deals +2.
-  Losing a trick disarms it.
-- **Chain:** win a trick with the same element as the last trick's winning
-  element and bank +1 chain damage.
-- **Pact wilds:** playing one opens a picker — you choose its element.
-- **Rook's tell:** Rook shows a gathering badge naming the element it is
-  most likely to play next (true about 7 times in 10). Your cards that beat
-  the telegraphed element glow gold.
-- Hands refill to five cards after each trick until the decks run out. The
-  higher life wins when the decks are spent.
+## How to play
+
+- Each trick, you and Rook each play a card. Power is the card's value, +3 when your element beats Rook's on the wheel: Ember > Gale > Tide > Ember. Stone is neutral.
+- The trick winner deals damage equal to the power difference (minimum 1).
+- Win two tricks in a row to arm **Surge** (+2 damage on your next win).
+- Win a trick with the same element as the previous trick's winning element to bank a **Chain** bonus (+1 damage).
+- Playing a **Pact** wild opens a picker: you choose its element.
+- Rook shows a **gathering intent** badge naming the element it is most likely to play next (about 70% true). Cards in your hand that beat the telegraphed element glow — read the tell and counter it.
+- First to reduce the other to 0 life wins.
 
 ## Run it
 
 ```sh
 node serve.ts
-# open http://localhost:8080
 ```
 
-Click a card to play it (keys 1–5 work too), M mutes the sound, Enter starts
-and restarts. Screenshot scenes: `?shot=title|table|win|loss&seed=N`.
+Then open http://localhost:8080 and play with mouse or keyboard.
 
-## Hand in
+## Build
+
+`main.ts` copies `game/` and `screenshots/` to `/output` and writes `/output/dossier.json` with `buildDossier` from `vendor/makefun-game.ts`:
 
 ```sh
 mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 ```
 
-`main.ts` copies `game/` and `screenshots/` to the output directory and
-writes `dossier.json` with the vendored make.fun library.
-
-## Layout
-
-- `game/src/deck.js` — deck, elements, wheel, power
-- `game/src/ai.js` — Rook's choices, its tell, and the autopilot
-- `game/src/game.js` — rules engine: tricks, Surge, chains, the log
-- `game/src/render.js` — the table, cards, screens
-- `game/src/sound.js` — synthesized Web Audio blips
-- `game/src/shots.js` — screenshot scenes
-- `game/src/main.js` — bootstrap, input, shot mode
+All art is original (inline SVG glyphs, CSS table) and all sound is synthesized with the Web Audio API. No network requests, no external assets.
