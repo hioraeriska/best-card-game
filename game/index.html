@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ember Pact — Duel of the Four Winds</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app">
+  <section id="title-screen" class="screen">
+    <div class="title-wrap">
+      <p class="kicker">A DUEL OF CARDS AND CUNNING</p>
+      <h1>EMBER PACT</h1>
+      <p class="subtitle">Duel of the Four Winds</p>
+      <div class="element-row" id="title-elements"></div>
+      <div class="rules">
+        <p><strong>Beat Rook the Cinder Fox.</strong> You both start at 30 life.</p>
+        <p>Each trick, play one card from your hand. The higher power wins; the loser
+        loses life equal to the difference (at least 1 on a win; a tie is a clash).</p>
+        <p>Ember beats Gale &middot; Gale beats Tide &middot; Tide beats Ember &middot;
+        Stone is neutral. A winning element adds <strong>+3 power</strong>. Pact wilds
+        (value 6) become the element that beats your rival&rsquo;s card.</p>
+        <p>Win two tricks in a row to arm <strong>Surge</strong> &mdash; your next win
+        deals +2 damage. Rook telegraphs a hint before you play: it tells the truth
+        most of the time.</p>
+      </div>
+      <button id="play-btn" class="big-btn">PLAY</button>
+      <p class="controls">Click a card to select, click again to play &middot; Keys 1&ndash;5 select &middot; Enter plays &middot; R restarts</p>
+    </div>
+  </section>
+
+  <section id="table-screen" class="screen hidden">
+    <header class="topbar">
+      <div class="brand">EMBER PACT</div>
+      <div class="round">ROUND <span id="round-num">1</span></div>
+      <button id="sound-btn" class="small-btn">Sound: on</button>
+    </header>
+    <div class="layout">
+      <div class="board">
+        <div class="side rook-side">
+          <div class="side-head">
+            <span class="side-name">ROOK THE CINDER FOX</span>
+            <span class="life"><span class="life-num" id="rook-life-num">30</span><span class="life-bar"><span id="rook-life-fill"></span></span></span>
+          </div>
+          <div class="hand rook-hand" id="rook-hand"></div>
+        </div>
+        <div class="arena">
+          <div class="arena-slot" id="arena-rook"></div>
+          <div class="arena-mid">
+            <div class="vs">VS</div>
+            <div class="trick-result" id="trick-result">Play a card to begin the duel.</div>
+          </div>
+          <div class="arena-slot" id="arena-player"></div>
+        </div>
+        <div class="side player-side">
+          <div class="side-head">
+            <span class="side-name">YOU</span>
+            <span class="surge-badge hidden" id="surge-badge">SURGE ARMED +2</span>
+            <span class="life"><span class="life-num" id="player-life-num">30</span><span class="life-bar"><span id="player-life-fill"></span></span></span>
+          </div>
+          <div class="hand player-hand" id="player-hand"></div>
+          <button id="play-card-btn" class="play-btn" disabled>PLAY CARD</button>
+        </div>
+      </div>
+      <aside class="rail">
+        <div class="rail-box">
+          <h3>ROOK&rsquo;S TELEGRAPH</h3>
+          <p id="telegraph">Rook gathers&hellip;</p>
+        </div>
+        <div class="rail-box log-box">
+          <h3>TRICK LOG</h3>
+          <ul id="log-list"></ul>
+        </div>
+        <div class="rail-box">
+          <h3>SCORE</h3>
+          <p id="stats-line">Tricks 0&ndash;0 &middot; Damage 0</p>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <div id="end-overlay" class="hidden">
+    <div class="end-panel">
+      <h2 id="end-title">VICTORY</h2>
+      <p id="end-sub"></p>
+      <div id="end-stats" class="end-stats"></div>
+      <button id="again-btn" class="big-btn">PLAY AGAIN</button>
+    </div>
+  </div>
+</div>
+<script type="module" src="src/main.js"></script>
+</body>
+</html>
