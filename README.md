@@ -1,35 +1,50 @@
-[![make.fun · best-card-game-20261122-1826](https://make.fun/badge/best-card-game-20261122-1826.svg)](https://make.fun/bounty/best-card-game-20261122-1826?utm_source=github&utm_medium=readme&utm_campaign=best-card-game-20261122-1826)
-[![rank](https://make.fun/badge/best-card-game-20261122-1826/hioraeriska/best-card-game/rank.svg)](https://make.fun/bounty/best-card-game-20261122-1826/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=best-card-game-20261122-1826)
-[![reward](https://make.fun/badge/best-card-game-20261122-1826/hioraeriska/best-card-game/reward.svg)](https://make.fun/bounty/best-card-game-20261122-1826?utm_source=github&utm_medium=readme&utm_campaign=best-card-game-20261122-1826)
+# Ember Pact v3 — Duel of the Four Winds
 
-# Ember Pact v2 — duel of the four winds
+A trick-taking duel against Rook the Cinder Fox. You and Rook start with 30
+life each; the first to 0 loses. Each hand deals 6 cards each from a 40-card
+deck: four elements (Ember, Gale, Tide, Stone) valued 1–9, plus four Pact
+wilds worth 6 in any element you name.
 
-An original card game built for the [best card game bounty on make.fun](https://make.fun/bounty/best-card-game-20261122-1826). You duel Rook the Cinder Fox, 30 life each, with a deck of four elements — Ember, Gale, Tide and Stone — values 1–9, plus 4 Pact wilds.
+## How a trick works
 
-## How to play
+- The leader plays a card; the other follows. Higher power takes the trick
+  and deals the power gap as damage (minimum 1).
+- Power is the card's value **+3** when its element beats the foe's on the
+  wheel — Ember beats Gale beats Tide beats Ember; Stone is neutral.
+- **Oath (new in v3):** at the start of every hand you swear an Oath on one
+  element. Oath cards gain **+2 power** all hand — but lose the hand and the
+  Oath breaks: Rook deals **+3** extra damage. Back your strongest element,
+  or the one that beats Rook's stance.
+- **Rook's stance:** each hand Rook favours one element (+1 power to its
+  cards of that element) and tells you which — its word holds about 7 times
+  in 10. Before every card Rook plays, a tell shows the element it is
+  eyeing, true about 7 times in 10. Read both, and counter them.
+- **Chain:** the same element winning twice running deals +1.
+- **Surge:** winning two tricks in a row arms +2 on your next win.
+- **Pact wilds:** play one and name its element — value 6 in the element
+  that beats Rook's card.
+- The hand winner deals +3 bonus damage. Then a fresh hand is dealt.
 
-- Each trick, you and Rook each play a card. Power is the card's value, +3 when your element beats Rook's on the wheel: Ember > Gale > Tide > Ember. Stone is neutral.
-- The trick winner deals damage equal to the power difference (minimum 1).
-- Win two tricks in a row to arm **Surge** (+2 damage on your next win).
-- Win a trick with the same element as the previous trick's winning element to bank a **Chain** bonus (+1 damage).
-- Playing a **Pact** wild opens a picker: you choose its element.
-- Rook shows a **gathering intent** badge naming the element it is most likely to play next (about 70% true). Cards in your hand that beat the telegraphed element glow — read the tell and counter it.
-- First to reduce the other to 0 life wins.
+## Controls
 
-## Run it
+Mouse or keyboard: keys **1–6** play a card, **1–4** swear an Oath or name a
+Pact element, **Enter** starts / plays again, **M** mutes the sound.
 
-```sh
-node serve.ts
-```
+## Files
 
-Then open http://localhost:8080 and play with mouse or keyboard.
+- `game/index.html` — the page; `game/styles.css` — the table
+- `game/src/rng.js` — seeded random numbers (one stream, replays match)
+- `game/src/deck.js` — the deck, the wheel, power
+- `game/src/ai.js` — Rook: stance, tells, card choice
+- `game/src/game.js` — the rules and the match state machine (no DOM)
+- `game/src/render.js` — the table, cards, overlays, flourish
+- `game/src/sound.js` — synthesized WebAudio blips, no audio files
+- `game/src/shots.js` — deterministic screenshot staging (`?shot=`)
+- `game/src/main.js` — input, timing, the pump that drives Rook
+- `main.ts` — hands the game in: copies `game/` + `screenshots/` to
+  `/output` and writes `/output/dossier.json`
+- `serve.ts` — local static server: `node serve.ts`, then open
+  http://localhost:8080
 
-## Build
-
-`main.ts` copies `game/` and `screenshots/` to `/output` and writes `/output/dossier.json` with `buildDossier` from `vendor/makefun-game.ts`:
-
-```sh
-mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
-```
-
-All art is original (inline SVG glyphs, CSS table) and all sound is synthesized with the Web Audio API. No network requests, no external assets.
+Screenshots: `?shot=title|table|win|loss` stages each screen; the cover is
+the mid-game table.

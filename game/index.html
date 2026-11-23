@@ -1,14 +1,64 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ember Pact — a duel of the four winds</title>
+<title>Ember Pact — Duel of the Four Winds</title>
+<link rel="icon" href="data:,">
 <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
-<div id="app" aria-label="Ember Pact card game"></div>
-<p id="status" role="status" aria-live="polite" style="position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;"></p>
+<div id="app">
+  <header id="topbar">
+    <div class="brand">EMBER PACT</div>
+    <div class="life-block">
+      <span class="life-label">YOU</span>
+      <div class="life-bar"><div class="life-fill you" id="life-you-fill"></div></div>
+      <span class="life-num" id="life-you-num">30</span>
+      <span class="hands" id="hands-you">Hands 0</span>
+      <span class="chip surge" id="surge-you" style="display:none"></span>
+    </div>
+    <div class="mid-chips">
+      <span class="chip oath" id="oath-chip" style="display:none"></span>
+      <span class="chip stance" id="stance-chip" style="display:none"></span>
+      <span class="tricks" id="tricks">Hand 1 · Tricks 0–0</span>
+    </div>
+    <div class="life-block">
+      <span class="life-label">ROOK 🦊</span>
+      <div class="life-bar"><div class="life-fill rook" id="life-rook-fill"></div></div>
+      <span class="life-num" id="life-rook-num">30</span>
+      <span class="hands" id="hands-rook">Hands 0</span>
+      <span class="chip surge-rook" id="surge-rook" style="display:none"></span>
+    </div>
+    <button id="mute-btn" type="button">Sound: on</button>
+  </header>
+
+  <section id="rook-area">
+    <div id="tell-chip" class="tell" style="display:none"></div>
+    <div id="rook-hand" class="hand-row"></div>
+    <div class="area-label">ROOK'S HAND</div>
+  </section>
+
+  <section id="table-area">
+    <div class="trick-row">
+      <div class="slot" id="table-rook"><span class="slot-hint">Rook's card</span></div>
+      <div class="trick-mid">
+        <div class="vs-mark">⚔</div>
+        <div id="pile" class="pile"></div>
+      </div>
+      <div class="slot" id="table-you"><span class="slot-hint">Your card</span></div>
+    </div>
+    <div id="float-layer"></div>
+  </section>
+
+  <section id="player-area">
+    <div class="area-label">YOUR HAND — <span id="hand-hint"></span></div>
+    <div id="player-hand" class="hand-row fan"></div>
+  </section>
+
+  <footer id="log-line"></footer>
+</div>
+<div id="overlay" class="overlay"></div>
 <script type="module" src="./src/main.js"></script>
 </body>
 </html>

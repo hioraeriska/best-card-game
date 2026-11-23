@@ -1,75 +1,90 @@
-// Sound for Ember Pact: tiny synthesized blips, no audio files.
-// Every sound is an oscillator through a gain envelope, built on first use
-// (browsers only let audio start after a gesture). Muted state survives in
-// a module flag the UI toggles.
+// Tiny synthesized sounds for Ember Pact: WebAudio bleeps, no audio files.
+//
+// Every sound is a short oscillator blip so the game ships zero assets.
+// Sound only starts after a user gesture (browsers demand it) and stays
+// silent in screenshot staging, where there is no gesture at all.
 
-let context = null;
+let ctx = null;
 let muted = false;
 
-export function setMuted(value) {
-  muted = value;
-}
-
+/** True when sound is currently silenced. */
 export function isMuted() {
   return muted;
 }
 
-function ac() {
-  if (!context) {
-    const Ctor = window.AudioContext || window.webkitAudioContext;
-    if (!Ctor) return null;
-    context = new Ctor();
+/** Flip the mute; returns the new state. */
+export function toggleMute() {
+  muted = !muted;
+  return muted;
+}
+
+/** Unlock audio on a user gesture. Safe to call any time. */
+export function unlockAudio() {
+  if (!ctx) {
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (AC) ctx = new AC();
+    } catch {
+      ctx = null;
+    }
   }
-  if (context.state === 'suspended') context.resume();
-  return context;
+  if (ctx && ctx.state === 'suspended') ctx.resume().catch(() => {});
 }
 
-function blip(freq, dur, type, vol, when) {
-  if (muted) return;
-  const ctx = ac();
-  if (!ctx) return;
-  const start = ctx.currentTime + (when || 0);
-  const osc = ctx.createOscillator();
-  const gain = ctx.createGain();
-  osc.type = type || 'sine';
-  osc.frequency.setValueAtTime(freq, start);
-  gain.gain.setValueAtTime(0.0001, start);
-  gain.gain.exponentialRampToValueAtTime(vol || 0.12, start + 0.01);
-  gain.gain.exponentialRampToValueAtTime(0.0001, start + dur);
-  osc.connect(gain);
-  gain.connect(ctx.destination);
-  osc.start(start);
-  osc.stop(start + dur + 0.02);
+function blip(freq, dur, type, gain, when = 0) {
+  if (muted || !ctx) return;
+  try {
+    const t = ctx.currentTime + when;
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, t);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(gain, t + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    osc.connect(g).connect(ctx.destination);
+    osc.start(t);
+    osc.stop(t + dur + 0.02);
+  } catch {
+    // Audio is decoration; never let it break the game.
+  }
 }
 
-export function soundClick() {
-  blip(660, 0.07, 'triangle', 0.08);
-}
-
-export function soundDraw() {
-  blip(520, 0.09, 'sine', 0.07);
-  blip(780, 0.09, 'sine', 0.06, 0.06);
-}
-
-export function soundPlay() {
-  blip(330, 0.1, 'triangle', 0.1);
-  blip(495, 0.12, 'triangle', 0.09, 0.07);
-}
-
-export function soundDamage() {
-  blip(180, 0.18, 'sawtooth', 0.07);
-  blip(120, 0.22, 'sawtooth', 0.06, 0.08);
-}
-
-export function soundWin() {
-  blip(523, 0.14, 'triangle', 0.12);
-  blip(659, 0.14, 'triangle', 0.12, 0.12);
-  blip(784, 0.2, 'triangle', 0.12, 0.24);
-  blip(1047, 0.32, 'triangle', 0.12, 0.36);
-}
-
-export function soundLose() {
-  blip(392, 0.2, 'sawtooth', 0.07);
-  blip(311, 0.2, 'sawtooth', 0.07, 0.18);
-  blip(233, 0.38, 'sawtooth', 0.07, 0.36);
+/** Play one of the game's named sounds. */
+export function sfx(name) {
+  if (muted || !ctx) return;
+  switch (name) {
+    case 'click':
+      blip(660, 0.06, 'triangle', 0.12);
+      break;
+    case 'play':
+      blip(440, 0.09, 'triangle', 0.16);
+      blip(660, 0.08, 'triangle', 0.1, 0.05);
+      break;
+    case 'win-trick':
+      blip(523, 0.1, 'triangle', 0.16);
+      blip(784, 0.14, 'triangle', 0.16, 0.08);
+      break;
+    case 'lose-trick':
+      blip(330, 0.12, 'sawtooth', 0.08);
+      blip(220, 0.16, 'sawtooth', 0.08, 0.08);
+      break;
+    case 'oath':
+      blip(392, 0.12, 'sine', 0.16);
+      blip(523, 0.12, 'sine', 0.16, 0.1);
+      blip(659, 0.2, 'sine', 0.16, 0.2);
+      break;
+    case 'pact':
+      blip(587, 0.1, 'sine', 0.14);
+      blip(880, 0.18, 'sine', 0.14, 0.08);
+      break;
+    case 'victory':
+      [523, 659, 784, 1047].forEach((f, i) => blip(f, 0.22, 'triangle', 0.18, i * 0.12));
+      break;
+    case 'defeat':
+      [392, 330, 262, 196].forEach((f, i) => blip(f, 0.26, 'sawtooth', 0.08, i * 0.14));
+      break;
+    default:
+      break;
+  }
 }

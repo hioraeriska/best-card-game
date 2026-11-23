@@ -1,59 +1,152 @@
-// Screenshot scenes for Ember Pact: ?shot=title|table|win|loss&seed=N.
-// Each scene plays the real rules forward from a fresh game with a fixed
-// seed, steered by the autopilot, so the frame is what a real game looks
-// like and the same seed always gives the same frame. The win and loss
-// scenes keep replaying fresh seeds until the side they need has won.
+// Screenshot staging for Ember Pact.
+//
+// ?shot=title|table|win|loss (and ?seed=N) builds a deterministic state for
+// each screenshot, driving the same pure-logic functions the player uses:
+// real hands are dealt, real tricks are played, real matches are won and
+// lost. Nothing here is faked for the camera.
 
-import { PHASE_OVER, PHASE_PLAY, newGame, playFullGame, playPlayerCard, startGame } from './game.js';
-import { autopilotPick } from './ai.js';
+import { ELEMENT_ORDER } from './deck.js';
+import {
+  beginHand,
+  chooseOath,
+  choosePact,
+  isOver,
+  newMatch,
+  resolveTrick,
+  rookPlay,
+  rookThink,
+  startMatch,
+  youPlay,
+} from './game.js';
 
-// Play a fixed number of tricks with the autopilot, then leave the next
-// trick open (Rook has chosen, the player has not) for a mid-game table.
-function playTricks(game, count) {
-  let done = 0;
+/** The player's auto-pilot for staging: strongest sensible card each trick. */
+function autoYouCard(state) {
+  const hand = state.youHand;
+  const foe = state.table.rook;
+  let best = hand[0];
+  let bestScore = -Infinity;
+  for (const card of hand) {
+    let score = card.value + (card.pact ? 1 : 0);
+    if (state.oath && card.element === state.oath) score += 2;
+    if (score > bestScore) {
+      bestScore = score;
+      best = card;
+    }
+  }
+  return best;
+}
+
+/** Play one full trick with the auto-pilot, whatever phase we are in. */
+function playAutoTrick(state) {
   let guard = 0;
-  while (done < count && game.phase === PHASE_PLAY && guard < 200) {
-    guard += 1;
-    if (!game.trick || game.trick.playerCard) continue;
-    const pick = autopilotPick(game.playerHand, game.rookHint);
-    const index = game.playerHand.indexOf(pick.card);
-    if (index === -1) break;
-    const before = game.trickCount;
-    const result = playPlayerCard(game, index, pick.chosenElement);
-    if (!result || result.needsPick) break;
-    if (game.trickCount > before) done += 1;
+  while (!isOver(state) && state.phase !== 'oath' && guard++ < 20) {
+    if (state.phase === 'handEnd') {
+      beginHand(state);
+      continue;
+    }
+    if (state.phase === 'lead-you' || state.phase === 'follow-you') {
+      const card = autoYouCard(state);
+      const res = youPlay(state, card.uid);
+      if (res === 'pact') choosePact(state, state.oath || 'ember');
+      continue;
+    }
+    if (state.phase === 'rook-thinking') {
+      if (!state.rookPending) {
+        rookThink(state);
+        continue;
+      }
+      rookPlay(state);
+      continue;
+    }
+    if (state.phase === 'trick') {
+      resolveTrick(state);
+      continue;
+    }
+    break;
   }
-  return game;
 }
 
-// Find a finished game, over seeds, whose winner is the side we need.
-function findFinishedGame(wantWinner, startSeed) {
-  let last = null;
-  for (let seed = startSeed; seed < startSeed + 60; seed += 1) {
-    last = playFullGame(seed);
-    if (last.phase === PHASE_OVER && last.winner === wantWinner) return last;
+/**
+ * Play a whole match with the auto-pilot and return the finished state, or
+ * null when the match did not end the wanted way.
+ */
+function simulateMatch(seed, wantWinner) {
+  const state = newMatch(seed);
+  startMatch(state);
+  let guard = 0;
+  while (!isOver(state) && guard++ < 400) {
+    if (state.phase === 'oath') {
+      // Oath on the element we hold most of, breaking ties toward the one
+      // that beats Rook's claimed stance.
+      const counts = {};
+      for (const e of ELEMENT_ORDER) counts[e] = 0;
+      for (const c of state.youHand) if (!c.pact) counts[c.element]++;
+      let best = ELEMENT_ORDER[0];
+      for (const e of ELEMENT_ORDER) if (counts[e] > counts[best]) best = e;
+      chooseOath(state, best);
+      continue;
+    }
+    playAutoTrick(state);
   }
-  // Fallback: the last game played, whatever its winner.
-  return last;
+  if (!isOver(state)) return null;
+  return state.winner === wantWinner ? state : null;
 }
 
-export function stageShot(name, seed) {
-  const base = Number.isFinite(seed) ? seed : 7;
-  if (name === 'table') {
-    const game = newGame(base);
-    startGame(game);
-    playTricks(game, 6);
-    return { game, screen: PHASE_PLAY };
+/** Find a seed whose auto-played match ends the wanted way. */
+function findMatch(wantWinner) {
+  for (let seed = 1; seed <= 400; seed++) {
+    const state = simulateMatch(seed, wantWinner);
+    if (state) return state;
   }
-  if (name === 'win') {
-    const game = findFinishedGame('player', base);
-    return { game, screen: PHASE_OVER };
+  return null;
+}
+
+/**
+ * Stage one screenshot. Returns a match state ready for render().
+ * 'table' is mid-hand: three real tricks played, a fourth in progress with
+ * the player's card down and Rook's tell showing.
+ */
+export function stageShot(shot, seed = 11) {
+  if (shot === 'win') {
+    return findMatch('you') || newMatch(seed);
   }
-  if (name === 'loss') {
-    const game = findFinishedGame('rook', base);
-    return { game, screen: PHASE_OVER };
+  if (shot === 'loss') {
+    return findMatch('rook') || newMatch(seed);
   }
-  // Title (and anything unknown): a fresh world, never started.
-  const game = newGame(base);
-  return { game, screen: 'title' };
+  if (shot === 'table') {
+    // Try seeds until one stages cleanly: three real tricks played, then a
+    // fourth left in progress with the player's card down and Rook's tell up.
+    for (let trySeed = seed; trySeed < seed + 100; trySeed++) {
+      const state = newMatch(trySeed);
+      startMatch(state);
+      chooseOath(state, 'ember');
+      playAutoTrick(state);
+      playAutoTrick(state);
+      playAutoTrick(state);
+      // Steer to a trick You lead: a hand may have ended mid-staging, or
+      // Rook may be leading. Advance until You lead (or swear a fresh Oath).
+      let guard = 0;
+      while (state.phase !== 'lead-you' && !isOver(state) && guard++ < 30) {
+        if (state.phase === 'handEnd') {
+          beginHand(state);
+          continue;
+        }
+        if (state.phase === 'oath') {
+          chooseOath(state, 'ember');
+          continue;
+        }
+        playAutoTrick(state);
+      }
+      if (isOver(state) || state.phase !== 'lead-you') continue;
+      const card = autoYouCard(state);
+      const res = youPlay(state, card.uid);
+      if (res === 'pact') choosePact(state, state.oath || 'ember');
+      if (state.phase !== 'rook-thinking') continue;
+      rookThink(state);
+      if (state.table.you && state.tell) return state;
+    }
+    return newMatch(seed);
+  }
+  // 'title' and anything else: the title screen.
+  return newMatch(seed);
 }

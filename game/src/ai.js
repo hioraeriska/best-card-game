@@ -1,82 +1,108 @@
-// Rook the Cinder Fox: the opponent AI for Ember Pact.
+// Rook the Cinder Fox: the opponent's brain.
 //
-// Rook is meant to be readable and counterable. At the start of every trick
-// Rook gathers its strength and shows an intent badge naming the element it
-// is most likely to play. The badge tells the truth about seven times in
-// ten: most tricks Rook really does play a card of the telegraphed element,
-// and the rest of the time it bluffs with something else, so the badge is a
-// lead, not a promise.
+// Rook is readable on purpose, so the player can counter it:
+//  - once per hand Rook takes a STANCE, favouring one element (+1 power to
+//    its cards of that element). The banner shows the stance Rook claims;
+//    70% of the time the claim is true, 30% it is a decoy and Rook really
+//    favours another element.
+//  - before every card Rook plays, a TELL shows the element Rook is eyeing:
+//    70% of the time it is the element Rook actually plays, 30% a bluff.
+// The player counters a stance by swearing the Oath on the element that
+// beats it, and counters a tell by playing a card whose element beats it.
 
-import { ELEMENT_ORDER, tableElement } from './deck.js';
+import { ELEMENT_ORDER, beatenBy, powerOf } from './deck.js';
 
-const HINT_TRUE_CHANCE = 0.7;
+/** How often Rook's stance claim and tells are honest. */
+export const TELL_HONESTY = 0.7;
 
-// Pick the element Rook will telegraph: the element of the strongest card in
-// its hand, so the hint names a real threat.
-function hintElement(hand, rng) {
-  let best = null;
+/**
+ * Pick Rook's stance for a hand: the element it really favours, the one it
+ * claims to favour, and whether the claim is honest.
+ */
+export function pickStance(rng) {
+  const actual = rng.pick(ELEMENT_ORDER);
+  const honest = rng.chance(TELL_HONESTY);
+  let shown = actual;
+  if (!honest) {
+    const others = ELEMENT_ORDER.filter((e) => e !== actual);
+    shown = rng.pick(others);
+  }
+  return { actual, shown, honest };
+}
+
+/**
+ * The tell for the card Rook is about to play: its true element 70% of
+ * the time, another element 30% of the time.
+ */
+export function tellFor(card, rng) {
+  if (rng.chance(TELL_HONESTY)) return { element: card.element, honest: true };
+  const others = ELEMENT_ORDER.filter((e) => e !== card.element);
+  return { element: rng.pick(others), honest: false };
+}
+
+/** Score a card as a lead: value, plus stance favour, plus a little noise. */
+function leadScore(card, stance, rng) {
+  let score = card.value;
+  if (card.element === stance.actual) score += 2;
+  if (card.pact) score += 1;
+  return score + rng.next() * 2;
+}
+
+/**
+ * Rook leads a trick. It likes its stance element and saves nothing in
+ * particular: a mid-strength card with a jitter, so its leads vary.
+ */
+export function chooseLeadCard(state, rng) {
+  const hand = state.rookHand;
+  let best = hand[0];
+  let bestScore = -Infinity;
   for (const card of hand) {
-    if (!best || card.value > best.value) best = card;
+    const score = leadScore(card, state.stance, rng);
+    if (score > bestScore) {
+      bestScore = score;
+      best = card;
+    }
   }
-  if (!best) return ELEMENT_ORDER[0];
-  return best.pact ? ELEMENT_ORDER[Math.floor(rng() * 4)] : best.element;
+  return best;
 }
 
-// Choose Rook's card for this trick and the hint it shows. The card is
-// picked now, before the player plays, so the trick is simultaneous: Rook
-// never reacts to the card the player just laid down.
-export function chooseRookPlay(hand, rng) {
-  const hint = hintElement(hand, rng);
-  const ofHint = hand.filter((card) => tableElement(card) === hint);
-  const roll = rng();
-  if (roll < HINT_TRUE_CHANCE && ofHint.length > 0) {
-    // Tell the truth: play a card of the hinted element. Rook does not
-    // always lead with its strongest — it spends its strength across the
-    // duel, so a player who reads the hint can still outplay it.
-    const pick = ofHint[Math.floor(rng() * ofHint.length)];
-    return { card: pick, hint, hintTrue: true };
+/**
+ * Rook follows the player's card. When it can win, it spends its cheapest
+ * winning card; when it cannot, it sheds its weakest card. One time in
+ * seven it plays a random card instead, so it never feels scripted.
+ */
+export function chooseFollowCard(state, youCard, rng) {
+  const hand = state.rookHand;
+  if (rng.chance(1 / 7)) return rng.pick(hand);
+  const winners = [];
+  let weakest = hand[0];
+  for (const card of hand) {
+    if (card.value < weakest.value) weakest = card;
+    const element = card.pact ? bestPactElement(state, youCard) : card.element;
+    const mine = powerOf({ ...card, element }, youCard.element, { stance: state.stance.actual });
+    const yours = powerOf(youCard, element, { oath: state.oath });
+    if (mine > yours) winners.push({ card, mine });
   }
-  // Bluff or conserve: play the weakest card that is NOT of the hinted
-  // element, saving the strong hinted cards for later.
-  const others = hand.filter((card) => tableElement(card) !== hint);
-  const pool = others.length > 0 ? others : hand;
-  let pick = pool[0];
-  for (const card of pool) if (card.value < pick.value) pick = card;
-  return { card: pick, hint, hintTrue: false };
-}
-
-// When Rook plays a Pact wild it names an element for it. It favours the
-// element that beats the player's most common hand element when it can see
-// the table, otherwise it picks at random.
-export function choosePactElement(rng) {
-  return ELEMENT_ORDER[Math.floor(rng() * ELEMENT_ORDER.length)];
-}
-
-// The autopilot that stages screenshot scenes and drives logic tests: pick
-// the cheapest card that beats the telegraphed element, else the cheapest
-// card in hand. A Pact wild takes the element that beats the hint.
-export function autopilotPick(hand, hint) {
-  const winners = hand.filter((card) => {
-    const el = card.pact ? null : card.element;
-    return el && beatsAgainst(el, hint);
-  });
-  const pool = winners.length > 0 ? winners : hand;
-  let pick = pool[0];
-  for (const card of pool) if (card.value < pick.value) pick = card;
-  if (pick.pact) {
-    const counter = counterElement(hint);
-    return { card: pick, chosenElement: counter };
+  if (winners.length > 0) {
+    winners.sort((a, b) => a.mine - b.mine);
+    return winners[0].card;
   }
-  return { card: pick, chosenElement: null };
+  return weakest;
 }
 
-function beatsAgainst(mine, theirs) {
-  const wheel = { ember: 'gale', gale: 'tide', tide: 'ember' };
-  return wheel[mine] === theirs;
-}
-
-// The element that beats a given element on the wheel; Stone has no counter.
-export function counterElement(element) {
-  const counter = { gale: 'ember', tide: 'gale', ember: 'tide' };
-  return counter[element] || 'ember';
+/**
+ * The element Rook gives a Pact wild. Following, it picks the element that
+ * beats the player's card when it can; leading, it picks the element that
+ * beats the player's Oath, since Oath cards are the ones the player leans on.
+ */
+export function bestPactElement(state, youCard) {
+  if (youCard) {
+    const beating = beatenBy(youCard.element);
+    if (beating) return beating;
+  }
+  if (state.oath) {
+    const beating = beatenBy(state.oath);
+    if (beating) return beating;
+  }
+  return state.stance.actual;
 }
