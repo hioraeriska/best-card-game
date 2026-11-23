@@ -1,31 +1,22 @@
-// Ember Pact v3: the entrypoint.
-//
-// Copies game/ and screenshots/ from this repository into the output
-// directory and writes /output/dossier.json with buildDossier from the
-// kit's vendor/makefun-game.ts. Runs on Node 22, standard library only.
-// Outside the grader, MAKEFUN_OUTPUT_DIR stands in for /output.
-
-import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+// main.ts — the entrypoint for Ember Pact v4.
+// One job: copy game/ and screenshots/ into /output (or MAKEFUN_OUTPUT_DIR)
+// and write /output/dossier.json with buildDossier. Node 22, stdlib only.
+// Deterministic: the same repository always writes the same bytes.
+import { cpSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { buildDossier } from './vendor/makefun-game.ts';
 
 const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
-const repoDir = dirname(fileURLToPath(import.meta.url));
 
+rmSync(outDir, { recursive: true, force: true });
 mkdirSync(outDir, { recursive: true });
-
-for (const name of ['game', 'screenshots']) {
-  const src = join(repoDir, name);
-  if (!existsSync(src)) throw new Error(`missing ${name}/ in the repository`);
-  cpSync(src, join(outDir, name), { recursive: true });
-}
-
-const dossier = buildDossier(outDir, {
-  text_max_bytes: 163840,
-  screenshots: { max: 4, max_bytes: 262144 },
-  game_max_files: 993,
-  game_max_bytes: 50331648,
-});
-
-writeFileSync(join(outDir, 'dossier.json'), dossier);
+cpSync('game', `${outDir}/game`, { recursive: true });
+cpSync('screenshots', `${outDir}/screenshots`, { recursive: true });
+writeFileSync(
+  `${outDir}/dossier.json`,
+  buildDossier(outDir, {
+    text_max_bytes: 163840,
+    screenshots: { max: 4, max_bytes: 262144 },
+    game_max_files: 993,
+    game_max_bytes: 50331648,
+  }),
+);

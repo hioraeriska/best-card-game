@@ -1,44 +1,34 @@
-// Ember Pact v3: a tiny static server for local play-testing.
-//
-// Serves game/ at http://localhost:8080 so the game can be played in a
-// desktop browser exactly as the grader's static host would serve it.
-// Node 22, standard library only. Run: node serve.ts
-
+// serve.ts — serve game/ locally for play-testing and screenshots.
+// One job: a tiny static server on http://localhost:8080. Node 22, stdlib only.
+import { createReadStream, existsSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
 import { extname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-const root = join(fileURLToPath(import.meta.url), '..', 'game');
-const types = {
-  '.html': 'text/html; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.mjs': 'text/javascript; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
+const ROOT = 'game';
+const PORT = 8080;
+const TYPES: Record<string, string> = {
+  '.html': 'text/html',
+  '.css': 'text/css',
+  '.js': 'text/javascript',
+  '.mjs': 'text/javascript',
+  '.json': 'application/json',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
 };
 
-const server = createServer(async (req, res) => {
-  try {
-    const path = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
-    const file = join(root, path === '/' ? 'index.html' : path);
-    if (!file.startsWith(root)) {
-      res.writeHead(403);
-      res.end('forbidden');
-      return;
-    }
-    const body = await readFile(file);
-    res.writeHead(200, { 'content-type': types[extname(file)] ?? 'application/octet-stream' });
-    res.end(body);
-  } catch {
-    res.writeHead(404);
-    res.end('not found');
+const server = createServer((req, res) => {
+  const path = decodeURIComponent(new URL(req.url ?? '/', 'http://localhost').pathname);
+  const file = join(ROOT, path === '/' ? 'index.html' : path);
+  if (!existsSync(file) || !statSync(file).isFile()) {
+    res.writeHead(404, { 'content-type': 'text/plain' });
+    res.end('not found\n');
+    return;
   }
+  res.writeHead(200, { 'content-type': TYPES[extname(file)] ?? 'application/octet-stream' });
+  createReadStream(file).pipe(res);
 });
 
-server.listen(8080, () => {
-  console.log('Ember Pact at http://localhost:8080');
+server.listen(PORT, () => {
+  console.log(`Ember Pact at http://localhost:${PORT}`);
 });

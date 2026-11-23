@@ -1,108 +1,83 @@
-// Rook the Cinder Fox: the opponent's brain.
-//
-// Rook is readable on purpose, so the player can counter it:
-//  - once per hand Rook takes a STANCE, favouring one element (+1 power to
-//    its cards of that element). The banner shows the stance Rook claims;
-//    70% of the time the claim is true, 30% it is a decoy and Rook really
-//    favours another element.
-//  - before every card Rook plays, a TELL shows the element Rook is eyeing:
-//    70% of the time it is the element Rook actually plays, 30% a bluff.
-// The player counters a stance by swearing the Oath on the element that
-// beats it, and counters a tell by playing a card whose element beats it.
+// ai.js — Rook the Cinder Fox. One job: choose Rook's card each trick.
+// Rook is readable and counterable: it declares a scheme each hand, plays
+// toward it honestly ~70% of the time, and can be punished by the counter.
+(function () {
+  const NS = (globalThis.EmberPact = globalThis.EmberPact || {});
 
-import { ELEMENT_ORDER, beatenBy, powerOf } from './deck.js';
-
-/** How often Rook's stance claim and tells are honest. */
-export const TELL_HONESTY = 0.7;
-
-/**
- * Pick Rook's stance for a hand: the element it really favours, the one it
- * claims to favour, and whether the claim is honest.
- */
-export function pickStance(rng) {
-  const actual = rng.pick(ELEMENT_ORDER);
-  const honest = rng.chance(TELL_HONESTY);
-  let shown = actual;
-  if (!honest) {
-    const others = ELEMENT_ORDER.filter((e) => e !== actual);
-    shown = rng.pick(others);
-  }
-  return { actual, shown, honest };
-}
-
-/**
- * The tell for the card Rook is about to play: its true element 70% of
- * the time, another element 30% of the time.
- */
-export function tellFor(card, rng) {
-  if (rng.chance(TELL_HONESTY)) return { element: card.element, honest: true };
-  const others = ELEMENT_ORDER.filter((e) => e !== card.element);
-  return { element: rng.pick(others), honest: false };
-}
-
-/** Score a card as a lead: value, plus stance favour, plus a little noise. */
-function leadScore(card, stance, rng) {
-  let score = card.value;
-  if (card.element === stance.actual) score += 2;
-  if (card.pact) score += 1;
-  return score + rng.next() * 2;
-}
-
-/**
- * Rook leads a trick. It likes its stance element and saves nothing in
- * particular: a mid-strength card with a jitter, so its leads vary.
- */
-export function chooseLeadCard(state, rng) {
-  const hand = state.rookHand;
-  let best = hand[0];
-  let bestScore = -Infinity;
-  for (const card of hand) {
-    const score = leadScore(card, state.stance, rng);
-    if (score > bestScore) {
-      bestScore = score;
-      best = card;
+  // Rook leads a trick (used when Rook wins the previous trick and the
+  // table lets it lead; the game currently always lets the player lead,
+  // so this also drives Rook's opening pressure in shot staging).
+  function rookLead(state) {
+    const hand = state.rookHand;
+    if (hand.length === 0) return null;
+    const scheme = state.scheme;
+    // Honest play: lean into the declared scheme element.
+    if (scheme && scheme.honest) {
+      const onScheme = hand.filter((c) => c.element === scheme.element);
+      if (onScheme.length > 0 && state.next() < 0.75) {
+        return strongest(onScheme);
+      }
     }
+    // Otherwise lead a mid-strength card, keeping the big ones in reserve.
+    const sorted = hand.slice().sort((a, b) => a.value - b.value);
+    return sorted[Math.min(sorted.length - 1, 1 + Math.floor(state.next() * Math.max(1, sorted.length - 2)))];
   }
-  return best;
-}
 
-/**
- * Rook follows the player's card. When it can win, it spends its cheapest
- * winning card; when it cannot, it sheds its weakest card. One time in
- * seven it plays a random card instead, so it never feels scripted.
- */
-export function chooseFollowCard(state, youCard, rng) {
-  const hand = state.rookHand;
-  if (rng.chance(1 / 7)) return rng.pick(hand);
-  const winners = [];
-  let weakest = hand[0];
-  for (const card of hand) {
-    if (card.value < weakest.value) weakest = card;
-    const element = card.pact ? bestPactElement(state, youCard) : card.element;
-    const mine = powerOf({ ...card, element }, youCard.element, { stance: state.stance.actual });
-    const yours = powerOf(youCard, element, { oath: state.oath });
-    if (mine > yours) winners.push({ card, mine });
-  }
-  if (winners.length > 0) {
-    winners.sort((a, b) => a.mine - b.mine);
-    return winners[0].card;
-  }
-  return weakest;
-}
+  // Rook answers the player's lead card. Returns the card it plays.
+  function rookAnswer(state, playerCard) {
+    const hand = state.rookHand;
+    if (hand.length === 0) return null;
+    const scheme = state.scheme;
 
-/**
- * The element Rook gives a Pact wild. Following, it picks the element that
- * beats the player's card when it can; leading, it picks the element that
- * beats the player's Oath, since Oath cards are the ones the player leans on.
- */
-export function bestPactElement(state, youCard) {
-  if (youCard) {
-    const beating = beatenBy(youCard.element);
-    if (beating) return beating;
+    // Even a fox misreads the table: one answer in five is a plain mistake,
+    // a random card instead of the best one. That is the player's opening.
+    if (state.next() < 0.2) {
+      return takeFromHand(state, hand[Math.floor(state.next() * hand.length)]);
+    }
+
+    // Bluff: sometimes Rook plays its scheme element even when a better
+    // answer exists, keeping the declaration readable but not certain.
+    if (scheme && scheme.honest && state.next() < 0.3) {
+      const onScheme = hand.filter((c) => c.element === scheme.element);
+      if (onScheme.length > 0) return takeFromHand(state, strongest(onScheme));
+    }
+
+    // Try to win with the cheapest card that beats the lead.
+    const winners = hand.filter((c) => NS.cardPower(c, playerCard) > NS.cardPower(playerCard, c));
+    if (winners.length > 0) {
+      // Prefer a winning card on the scheme element when one exists.
+      if (scheme && scheme.honest) {
+        const schemeWinners = winners.filter((c) => c.element === scheme.element);
+        if (schemeWinners.length > 0) return takeFromHand(state, weakest(schemeWinners));
+      }
+      return takeFromHand(state, weakest(winners));
+    }
+
+    // Cannot win: sacrifice the weakest card, unless the scheme is hot
+    // and the player is about to break it — then spend a scheme card
+    // to keep the chain alive.
+    if (scheme && scheme.honest && NS.beats(playerCard.element, scheme.element)) {
+      const onScheme = hand.filter((c) => c.element === scheme.element);
+      if (onScheme.length > 0 && state.next() < 0.5) return takeFromHand(state, weakest(onScheme));
+    }
+    return takeFromHand(state, weakest(hand));
   }
-  if (state.oath) {
-    const beating = beatenBy(state.oath);
-    if (beating) return beating;
+
+  // Remove a card object from Rook's hand and return it.
+  function takeFromHand(state, card) {
+    const i = state.rookHand.indexOf(card);
+    if (i >= 0) state.rookHand.splice(i, 1);
+    return card;
   }
-  return state.stance.actual;
-}
+
+  function weakest(cards) {
+    return cards.slice().sort((a, b) => a.value - b.value)[0];
+  }
+
+  function strongest(cards) {
+    return cards.slice().sort((a, b) => b.value - a.value)[0];
+  }
+
+  NS.rookLead = rookLead;
+  NS.rookAnswer = rookAnswer;
+})();

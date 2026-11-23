@@ -1,249 +1,197 @@
-// Ember Pact's table: every pixel the player sees, drawn from state.
-//
-// render(state, ui) redraws the whole table from the match state: life bars,
-// hands, the trick, the Oath and stance banners, Rook's tell, the trick pile
-// and the log. Overlays (title, Oath choice, Pact choice, win, loss) are
-// built per phase. Nothing here owns rules; it only shows what game.js did.
+// render.js — the table, the cards and the screens. One job: draw state.
+// Reads the match state and writes the DOM; it never changes the rules.
+(function () {
+  const NS = (globalThis.EmberPact = globalThis.EmberPact || {});
 
-import { ELEMENTS, ELEMENT_ORDER } from './deck.js';
-
-/** Build one card's DOM node. */
-export function cardEl(card, { playable = false, selected = false, faceDown = false, small = false } = {}) {
-  const el = document.createElement('div');
-  el.className = `card${card.pact ? ' el-pact' : ` el-${card.element}`}${playable ? ' playable' : ''}${selected ? ' selected' : ''}${faceDown ? ' back' : ''}${small ? ' mini' : ''}`;
-  if (card.uid) el.dataset.uid = card.uid;
-  if (faceDown) {
-    el.innerHTML = `<span class="back-glyph">\u{1F98A}</span><span class="back-word">ROOK</span>`;
-    return el;
-  }
-  const meta = card.pact ? null : ELEMENTS[card.element];
-  const glyph = card.pact ? '\u2726' : meta.glyph;
-  const name = card.pact ? 'Pact' : meta.name;
-  el.innerHTML = `<span class="val">${card.value}</span><span class="glyph">${glyph}</span><span class="elname">${name}</span>`;
-  return el;
-}
-
-function lifeBar(fillEl, numEl, life) {
-  fillEl.style.width = `${Math.max(0, (life / 30) * 100)}%`;
-  numEl.textContent = `${life}`;
-  fillEl.classList.toggle('low', life <= 10);
-}
-
-function bannerChip(el, text, kind) {
-  el.textContent = text;
-  el.className = `chip ${kind}`;
-  el.style.display = text ? '' : 'none';
-}
-
-/** Draw the whole table from state. ui carries the click callbacks. */
-export function render(state, ui) {
-  const $ = (id) => document.getElementById(id);
-
-  // Top bar: life, hands, tricks, Oath, stance, Surge.
-  lifeBar($('life-you-fill'), $('life-you-num'), state.life.you);
-  lifeBar($('life-rook-fill'), $('life-rook-num'), state.life.rook);
-  $('hands-you').textContent = `Hands ${state.hands.you}`;
-  $('hands-rook').textContent = `Hands ${state.hands.rook}`;
-  $('tricks').textContent = `Hand ${Math.max(1, state.handNo)} · Tricks ${state.tricks.you}–${state.tricks.rook}`;
-  bannerChip(
-    $('oath-chip'),
-    state.oath ? `OATH: ${ELEMENTS[state.oath].name.toUpperCase()} +2` : '',
-    'oath',
-  );
-  bannerChip(
-    $('stance-chip'),
-    state.stance ? `ROOK FAVOURS: ${ELEMENTS[state.stance.shown].name.toUpperCase()}` : '',
-    'stance',
-  );
-  bannerChip($('surge-you'), state.surge.you ? 'SURGE ARMED +2' : '', 'surge');
-  bannerChip($('surge-rook'), state.surge.rook ? 'ROOK SURGE +2' : '', 'surge-rook');
-
-  // Rook's hand: face-down backs, plus the tell while Rook thinks.
-  const rookHand = $('rook-hand');
-  rookHand.innerHTML = '';
-  for (let i = 0; i < state.rookHand.length; i++) {
-    rookHand.appendChild(cardEl({ uid: '', element: 'stone', value: 0, pact: false }, { faceDown: true, small: true }));
-  }
-  const tell = $('tell-chip');
-  if (state.tell && (state.phase === 'rook-thinking' || state.rookPending)) {
-    const meta = ELEMENTS[state.tell.element];
-    tell.innerHTML = `Rook eyes <b>${meta.glyph} ${meta.name}</b> — counter it!`;
-    tell.style.display = '';
-  } else {
-    tell.style.display = 'none';
-  }
-
-  // The trick on the table.
-  const youSlot = $('table-you');
-  const rookSlot = $('table-rook');
-  youSlot.innerHTML = '';
-  rookSlot.innerHTML = '';
-  if (state.table.you) youSlot.appendChild(cardEl(state.table.you, { selected: true }));
-  else youSlot.innerHTML = '<span class="slot-hint">Your card</span>';
-  if (state.table.rook) rookSlot.appendChild(cardEl(state.table.rook, {}));
-  else rookSlot.innerHTML = '<span class="slot-hint">Rook\u2019s card</span>';
-  if (state.rookPending) rookSlot.innerHTML = '<span class="slot-hint">Rook is choosing\u2026</span>';
-
-  // The trick pile: the last tricks, small, so the match's shape is visible.
-  const pile = $('pile');
-  pile.innerHTML = '';
-  for (const t of state.pile) {
-    const row = document.createElement('div');
-    row.className = 'pile-row';
-    row.appendChild(cardEl(t.youCard, { small: true }));
-    row.appendChild(cardEl(t.rookCard, { small: true }));
-    const who = document.createElement('span');
-    who.className = 'pile-who';
-    who.textContent = t.winner === 'you' ? 'You' : 'Rook';
-    row.appendChild(who);
-    pile.appendChild(row);
-  }
-
-  // The player's hand, fanned, clickable when it is their turn.
-  const hand = $('player-hand');
-  hand.innerHTML = '';
-  const canPlay = state.phase === 'lead-you' || state.phase === 'follow-you';
-  state.youHand.forEach((card, i) => {
-    const node = cardEl(card, { playable: canPlay, selected: state.pendingPact && state.pendingPact.uid === card.uid });
-    const mid = (state.youHand.length - 1) / 2;
-    node.style.setProperty('--rot', `${(i - mid) * 4}deg`);
-    node.style.setProperty('--lift', `${Math.abs(i - mid) * 3}px`);
-    if (canPlay) {
-      node.addEventListener('click', () => ui.onPlay(card.uid));
+  // One card's HTML. Giant numeral + glyph + colour: readable at thumbnail
+  // size, never text alone.
+  function cardHtml(card, opts) {
+    opts = opts || {};
+    const el = NS.ELEMENTS[card.element];
+    const cls = 'card el-' + card.element.toLowerCase() + (opts.faceDown ? ' face-down' : '') + (opts.played ? ' played' : '');
+    if (opts.faceDown) {
+      return '<div class="' + cls + '" aria-label="Hidden card">' +
+        '<span class="card-back">🔥</span><span class="card-back-name">EMBER PACT</span></div>';
     }
-    hand.appendChild(node);
-  });
-  $('hand-hint').textContent =
-    state.phase === 'lead-you'
-      ? 'Your lead — click a card (keys 1–6)'
-      : state.phase === 'follow-you'
-        ? 'Rook led — beat it if you can (keys 1–6)'
-        : state.phase === 'oath'
-          ? 'Swear your Oath to begin the hand'
-          : state.phase === 'pact'
-            ? 'Choose what your Pact wild burns as'
-            : state.phase === 'rook-thinking'
-              ? 'Rook is thinking\u2026'
-              : state.phase === 'trick'
-                ? 'Trick resolving\u2026'
-                : '';
-
-  // The running log: the last thing that happened.
-  $('log-line').textContent = state.log.length ? state.log[state.log.length - 1] : '';
-
-  renderOverlay(state, ui);
-}
-
-/** The phase overlay: title, Oath, Pact, hand end, win, loss. */
-function renderOverlay(state, ui) {
-  const $ = (id) => document.getElementById(id);
-  const overlay = $('overlay');
-  overlay.innerHTML = '';
-  overlay.className = 'overlay';
-  document.body.classList.toggle('won', state.phase === 'over' && state.winner === 'you');
-  document.body.classList.toggle('lost', state.phase === 'over' && state.winner === 'rook');
-
-  if (state.phase === 'title') {
-    overlay.innerHTML = `
-      <div class="panel title-panel">
-        <div class="kicker">A DUEL OF THE FOUR WINDS</div>
-        <h1>EMBER<br>PACT</h1>
-        <div class="vs">You <span class="vs-x">vs</span> Rook the Cinder Fox · 30 life each</div>
-        <div class="rules">
-          <p><b>Win tricks.</b> Higher power takes the trick and deals the gap as damage.</p>
-          <p><b>Swear an Oath</b> each hand: one element gains +2 — lose the hand and it breaks for +3.</p>
-          <p><b>Read Rook.</b> Its stance and its tells are true about 7 times in 10. Counter them.</p>
-          <p><b>Chains &amp; Surge.</b> Same element twice running: +1. Two tricks in a row arms Surge +2.</p>
-        </div>
-        <div class="legend">${ELEMENT_ORDER.map((e) => `<span class="legend-item" style="--c:${ELEMENTS[e].color}">${ELEMENTS[e].glyph} ${ELEMENTS[e].name}</span>`).join('')}<span class="legend-item" style="--c:#b8860b">✦ Pact wild</span></div>
-        <button class="big-btn" id="start-btn">Begin the Duel</button>
-        <div class="keys-hint">Mouse or keys 1–6 to play · Enter to start</div>
-      </div>`;
-    $('start-btn').addEventListener('click', () => ui.onStart());
-    return;
+    const tag = opts.clickable ? 'button' : 'div';
+    const data = opts.clickable ? ' data-card="' + card.id + '"' : '';
+    const label = el.name + ' ' + card.value;
+    return '<' + tag + ' class="' + cls + '"' + data + ' aria-label="' + label + '">' +
+      '<span class="card-glyph">' + el.glyph + '</span>' +
+      '<span class="card-value">' + card.value + '</span>' +
+      '<span class="card-name">' + el.name + '</span>' +
+      '<span class="card-glyph small">' + el.glyph + '</span>' +
+      '</' + tag + '>';
   }
 
-  if (state.phase === 'oath') {
-    const counts = {};
-    for (const e of ELEMENT_ORDER) counts[e] = 0;
-    for (const c of state.youHand) if (!c.pact) counts[c.element]++;
-    overlay.innerHTML = `
-      <div class="panel">
-        <h2>Swear your Oath</h2>
-        <p class="panel-sub">One element gains <b>+2 power</b> all hand. Lose the hand and the Oath breaks: <b>Rook deals +3</b>.</p>
-        <p class="panel-sub">Rook's stance: <b>${ELEMENTS[state.stance.shown].name}</b> — its word holds about 7 times in 10.</p>
-        <div class="choice-row">
-          ${ELEMENT_ORDER.map((e, i) => {
-            const beats = ELEMENTS[e].beats ? `beats ${ELEMENTS[ELEMENTS[e].beats].name}` : 'neutral';
-            return `<button class="choice-btn el-${e}" data-el="${e}"><span class="choice-glyph">${ELEMENTS[e].glyph}</span><span class="choice-name">${ELEMENTS[e].name}</span><span class="choice-note">${beats} · ${counts[e]} in hand</span><span class="choice-key">${i + 1}</span></button>`;
-          }).join('')}
-        </div>
-      </div>`;
-    overlay.querySelectorAll('.choice-btn').forEach((b) => b.addEventListener('click', () => ui.onOath(b.dataset.el)));
-    return;
+  // A life bar with a number big enough to read from across the room.
+  function lifeHtml(who, life, max) {
+    const pct = Math.max(0, Math.min(100, (life / max) * 100));
+    const low = life <= 10 ? ' low' : '';
+    return '<div class="life' + low + '" data-who="' + who + '">' +
+      '<span class="life-num">' + Math.max(0, life) + '</span>' +
+      '<span class="life-bar"><span class="life-fill" style="width:' + pct + '%"></span></span>' +
+      '<span class="life-max">/ ' + max + '</span></div>';
   }
 
-  if (state.phase === 'pact') {
-    overlay.innerHTML = `
-      <div class="panel">
-        <h2>Your Pact wild burns as…</h2>
-        <p class="panel-sub">A wild is value 6 in the element you name. Pick the one that beats Rook's card.</p>
-        <div class="choice-row">
-          ${ELEMENT_ORDER.map((e, i) => `<button class="choice-btn el-${e}" data-el="${e}"><span class="choice-glyph">${ELEMENTS[e].glyph}</span><span class="choice-name">${ELEMENTS[e].name}</span><span class="choice-note">${ELEMENTS[e].beats ? `beats ${ELEMENTS[ELEMENTS[e].beats].name}` : 'neutral'}</span><span class="choice-key">${i + 1}</span></button>`).join('')}
-        </div>
-      </div>`;
-    overlay.querySelectorAll('.choice-btn').forEach((b) => b.addEventListener('click', () => ui.onPact(b.dataset.el)));
-    return;
+  // Rook's scheme banner: what it is building toward, and its counter.
+  function schemeHtml(scheme) {
+    if (!scheme) return '';
+    const el = NS.ELEMENTS[scheme.element];
+    const counter = scheme.counter ? NS.ELEMENTS[scheme.counter] : null;
+    const counterText = counter
+      ? 'Counter it with <b style="color:' + counter.color + '">' + counter.glyph + ' ' + counter.name + '</b>'
+      : 'Stone has no counter — beat it on value';
+    return '<div class="scheme">' +
+      '<span class="scheme-label">ROOK&rsquo;S SCHEME</span>' +
+      '<span class="scheme-el" style="color:' + el.color + '">' + el.glyph + ' ' + el.name.toUpperCase() + ' SURGE</span>' +
+      '<span class="scheme-counter">' + counterText + '</span></div>';
   }
 
-  if (state.phase === 'handEnd') {
-    overlay.innerHTML = `
-      <div class="panel slim">
-        <h2>${state.handWinner === 'you' ? 'Hand yours' : state.handWinner === 'rook' ? 'Hand lost — the Oath breaks' : 'Hand tied'}</h2>
-        <p class="panel-sub">${state.log.length ? state.log[state.log.length - 1] : ''}</p>
-        <p class="panel-sub">Life — You ${state.life.you} · Rook ${state.life.rook}</p>
-      </div>`;
-    return;
+  // Pact pips: one dot per element, lit once that element has won a trick.
+  function pactHtml(wonElements) {
+    return '<div class="pact" title="Win a trick with every element to burst the Pact">' +
+      NS.ELEMENT_KEYS.map((key) => {
+        const el = NS.ELEMENTS[key];
+        const lit = wonElements.includes(key) ? ' lit' : '';
+        return '<span class="pact-pip' + lit + '" style="--el:' + el.color + '" title="' + el.name + '">' + el.glyph + '</span>';
+      }).join('') +
+      '<span class="pact-label">PACT ' + wonElements.length + '/4</span></div>';
   }
 
-  if (state.phase === 'over') {
-    const won = state.winner === 'you';
-    overlay.innerHTML = `
-      <div class="panel ${won ? 'win-panel' : 'lose-panel'}">
-        <h1>${won ? 'VICTORY' : 'DEFEAT'}</h1>
-        <div class="vs">${won ? 'The Cinder Fox bows. The embers are yours.' : 'The embers take you. Rook keeps the table.'}</div>
-        <p class="panel-sub">${state.overReason}</p>
-        <p class="panel-sub">Hands ${state.hands.you}–${state.hands.rook} · ${state.handNo} hand${state.handNo === 1 ? '' : 's'} · Life You ${state.life.you} — Rook ${state.life.rook}</p>
-        <button class="big-btn" id="again-btn">Play Again</button>
-        <div class="keys-hint">Enter to play again</div>
-      </div>`;
-    $('again-btn').addEventListener('click', () => ui.onAgain());
-    if (won) winFlourish();
+  // The whole table screen, rebuilt from state after every trick.
+  function renderTable(state, hooks) {
+    const root = document.getElementById('screen-table');
+    if (!root) return;
+    const last = state.lastTrick;
+    const resultLine = last
+      ? (last.winner === 'player' ? 'You take the trick' : last.winner === 'rook' ? 'Rook takes the trick' : 'Tie — no damage')
+        + (last.damage > 0 ? ' · −' + last.damage + ' life' : '')
+        + (last.chain > 1 ? ' · Chain ×' + last.chain : '')
+        + (last.pactBurst ? ' · PACT BURST!' : '')
+        + (last.schemeBroken ? ' · Scheme broken!' : '')
+      : (state.leader === 'rook' ? 'Rook leads — answer it.' : 'Play a card to lead the trick.');
+    const rookBacks = state.rookHand.map(() => cardHtml({ element: 'EMBER', value: 0 }, { faceDown: true })).join('');
+    const playerCards = state.playerHand.map((c) => cardHtml(c, { clickable: state.phase === 'playing' })).join('');
+    root.innerHTML =
+      '<div class="table-top">' +
+        '<div class="foe"><span class="foe-name">🦊 ROOK <span class="foe-sub">the Cinder Fox</span></span>' +
+        lifeHtml('rook', state.rookLife, NS.START_LIFE) + '</div>' +
+        schemeHtml(state.scheme) +
+      '</div>' +
+      '<div class="rook-hand">' + rookBacks + '<span class="hand-count">' + state.rookHand.length + ' cards</span></div>' +
+      '<div class="trick-area">' +
+        '<div class="played-slot">' + (state.rookPlayed ? cardHtml(state.rookPlayed, { played: true }) : '<div class="slot-empty">ROOK</div>') + '</div>' +
+        '<div class="trick-mid">' +
+          '<div class="trick-num">TRICK ' + Math.max(1, state.trick) + '</div>' +
+          '<div class="chain-meter">' + (state.chain > 1 ? '🔥 CHAIN ×' + state.chain : 'CHAIN ×1') + '</div>' +
+          '<div class="trick-result">' + resultLine + '</div>' +
+          '<div class="deck-info">Deck ' + state.deck.length + ' · Discard ' + state.discard.length + '</div>' +
+        '</div>' +
+        '<div class="played-slot">' + (state.playerPlayed ? cardHtml(state.playerPlayed, { played: true }) : '<div class="slot-empty">YOU</div>') + '</div>' +
+      '</div>' +
+      '<div class="table-bottom">' +
+        '<div class="you"><span class="you-name">YOU</span>' + lifeHtml('player', state.playerLife, NS.START_LIFE) + '</div>' +
+        pactHtml(state.playerPact) +
+        '<div class="table-buttons">' +
+          '<button id="btn-mute" class="mini-btn">' + (NS.sound.isMuted() ? '🔇 Sound off' : '🔊 Sound on') + '</button>' +
+          '<button id="btn-new" class="mini-btn">↻ New match</button>' +
+          '<button id="btn-help" class="mini-btn">? Rules</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="player-hand">' + playerCards + '</div>' +
+      '<div class="trick-log">' + state.log.map((l) => '<div>' + l + '</div>').join('') + '</div>';
+    wireTable(root, hooks);
   }
-}
 
-/** A floating damage number over the loser's side of the table. */
-export function showFloater(text, side) {
-  const layer = document.getElementById('float-layer');
-  if (!layer) return;
-  const el = document.createElement('div');
-  el.className = `floater ${side}`;
-  el.textContent = text;
-  layer.appendChild(el);
-  setTimeout(() => el.remove(), 1400);
-}
-
-/** The win flourish: embers rising across the screen. */
-export function winFlourish() {
-  const layer = document.getElementById('float-layer');
-  if (!layer || layer.querySelector('.ember')) return;
-  for (let i = 0; i < 28; i++) {
-    const e = document.createElement('div');
-    e.className = 'ember';
-    e.style.left = `${4 + Math.random() * 92}%`;
-    e.style.animationDelay = `${Math.random() * 1.2}s`;
-    e.style.setProperty('--drift', `${(Math.random() - 0.5) * 120}px`);
-    layer.appendChild(e);
-    setTimeout(() => e.remove(), 4200);
+  function wireTable(root, hooks) {
+    root.querySelectorAll('[data-card]').forEach((el) => {
+      el.addEventListener('click', () => hooks.onPlayCard(el.getAttribute('data-card')));
+    });
+    const mute = root.querySelector('#btn-mute');
+    if (mute) mute.addEventListener('click', hooks.onToggleMute);
+    const fresh = root.querySelector('#btn-new');
+    if (fresh) fresh.addEventListener('click', hooks.onRestart);
+    const help = root.querySelector('#btn-help');
+    if (help) help.addEventListener('click', hooks.onShowHelp);
   }
-}
+
+  // Title screen: the hook, the rules in four lines, one big start button.
+  function renderTitle(hooks) {
+    const root = document.getElementById('screen-title');
+    if (!root) return;
+    root.innerHTML =
+      '<div class="title-wrap">' +
+        '<div class="title-embers">🔥 🌪️ 💧 🪨</div>' +
+        '<h1 class="title">EMBER<br>PACT</h1>' +
+        '<p class="tagline">Outwit Rook the Cinder Fox in a duel of elements.</p>' +
+        '<div class="rules">' +
+          '<div><b>Play a card each trick.</b> Higher power takes the trick, deals damage, and leads the next.</div>' +
+          '<div><b>🔥 &gt; 🌪️ &gt; 💧 &gt; 🔥.</b> Advantage is +3 power. 🪨 Stone fights on value alone.</div>' +
+          '<div><b>Chain:</b> win tricks with the same element in a row to multiply damage.</div>' +
+          '<div><b>Pact:</b> win with all four elements to burst +6 damage and heal 4.</div>' +
+          '<div><b>Scheme:</b> Rook declares its element — break it with the counter.</div>' +
+        '</div>' +
+        '<button id="btn-start" class="big-btn">▶ &nbsp;START THE DUEL</button>' +
+        '<p class="title-foot">30 life each · first to zero loses · keys 1–5 play a card</p>' +
+      '</div>';
+    const start = root.querySelector('#btn-start');
+    if (start) start.addEventListener('click', hooks.onStart);
+  }
+
+  // Win / loss screen with the match's numbers.
+  function renderEnd(state, hooks) {
+    const root = document.getElementById('screen-end');
+    if (!root) return;
+    const won = state.phase === 'won';
+    root.innerHTML =
+      '<div class="end-wrap ' + (won ? 'win' : 'loss') + '">' +
+        '<div class="end-glyph">' + (won ? '🏆' : '🦊') + '</div>' +
+        '<h1 class="end-title">' + (won ? 'THE PACT IS YOURS' : 'ROOK TAKES THE EMBERS') + '</h1>' +
+        '<p class="end-line">' + (won
+          ? 'Rook bows, outplayed at its own table. The cinders are yours.'
+          : 'The fox keeps your embers this time. Shuffle up and break its scheme.') + '</p>' +
+        '<div class="end-stats">' +
+          '<div><span class="stat-num">' + state.playerTricks + '</span><span class="stat-label">tricks won</span></div>' +
+          '<div><span class="stat-num">' + state.trick + '</span><span class="stat-label">tricks played</span></div>' +
+          '<div><span class="stat-num">×' + Math.max(1, state.playerChainBest) + '</span><span class="stat-label">best chain</span></div>' +
+          '<div><span class="stat-num">' + state.playerPacts + '</span><span class="stat-label">pacts burst</span></div>' +
+          '<div><span class="stat-num">' + state.schemeBreaks + '</span><span class="stat-label">schemes broken</span></div>' +
+        '</div>' +
+        '<button id="btn-again" class="big-btn">' + (won ? '↻ &nbsp;PLAY AGAIN' : '↻ &nbsp;REMATCH') + '</button>' +
+      '</div>';
+    const again = root.querySelector('#btn-again');
+    if (again) again.addEventListener('click', hooks.onRestart);
+  }
+
+  // Show exactly one screen.
+  function showScreen(name) {
+    ['title', 'table', 'end'].forEach((n) => {
+      const el = document.getElementById('screen-' + n);
+      if (el) el.classList.toggle('active', n === name);
+    });
+  }
+
+  // A floating damage number over the table.
+  function damagePop(text, who) {
+    const area = document.querySelector('.trick-area');
+    if (!area) return;
+    const pop = document.createElement('div');
+    pop.className = 'dmg-pop ' + who;
+    pop.textContent = text;
+    area.appendChild(pop);
+    setTimeout(() => pop.remove(), 1100);
+  }
+
+  NS.render = {
+    cardHtml,
+    lifeHtml,
+    schemeHtml,
+    pactHtml,
+    renderTable,
+    renderTitle,
+    renderEnd,
+    showScreen,
+    damagePop,
+  };
+})();

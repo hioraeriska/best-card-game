@@ -1,291 +1,242 @@
-// Ember Pact: the rules and the match state machine.
-//
-// A match is You vs Rook the Cinder Fox, 30 life each. Each hand deals 6
-// cards each from the 40-card deck. The player swears an OATH on one element
-// at the start of every hand: Oath cards get +2 power all hand, but if the
-// player loses the hand the Oath breaks and Rook deals +3 extra damage.
-// Tricks are won on power (value + wheel + Oath/stance); the winner deals
-// damage equal to the power gap (min 1), +1 for a Chain (the same element
-// winning twice running), +2 for a Surge (armed by winning two tricks in a
-// row). The hand winner deals +3 bonus damage. First to 0 life loses.
-//
-// This file is pure logic: no DOM, no timers, no sound. The browser shell
-// (main.js) drives it and render.js draws it, so a Node test can play whole
-// matches headlessly through the same functions.
+// game.js — the rules of Ember Pact. One job: pure match state and tricks.
+// No DOM, no sound, no randomness of its own: every random choice comes
+// from the seeded next() the match carries, so a match replays from a seed.
+(function () {
+  const NS = (globalThis.EmberPact = globalThis.EmberPact || {});
 
-import { buildDeck, ELEMENT_ORDER, powerOf } from './deck.js';
-import { makeRng } from './rng.js';
-import { bestPactElement, chooseFollowCard, chooseLeadCard, pickStance, tellFor } from './ai.js';
+  const HAND_SIZE = 5;
+  const HAND_LIMIT = 7;
+  const START_LIFE = 30;
+  const ADVANTAGE_BONUS = 3;
+  const PACT_BONUS_DAMAGE = 6;
+  const PACT_HEAL = 4;
+  const SCHEME_BREAK_BONUS = 3;
+  const SCHEME_EVERY_TRICKS = 4;
+  const MAX_TRICK_DAMAGE = 8;
 
-export const HAND_SIZE = 6;
-export const START_LIFE = 30;
-export const HAND_BONUS = 3;
-export const OATH_BREAK = 3;
-export const OATH_BONUS = 2;
-export const WHEEL_BONUS = 3;
-export const CHAIN_BONUS = 1;
-export const SURGE_BONUS = 2;
-
-/** A fresh match, before the title screen is dismissed. */
-export function newMatch(seed = 20261123) {
-  return {
-    seed,
-    rng: makeRng(seed),
-    phase: 'title', // title | oath | pact | lead-you | follow-you | rook-thinking | trick | handEnd | over
-    life: { you: START_LIFE, rook: START_LIFE },
-    hands: { you: 0, rook: 0 },
-    handNo: 0,
-    handWinner: null,
-    tricks: { you: 0, rook: 0 },
-    trickNo: 0,
-    oath: null,
-    stance: null,
-    youHand: [],
-    rookHand: [],
-    table: { you: null, rook: null },
-    leader: 'you',
-    streak: { you: 0, rook: 0 },
-    surge: { you: false, rook: false },
-    lastWinElement: null,
-    tell: null,
-    rookPending: null,
-    rookHidden: false,
-    pendingPact: null,
-    lastTrick: null,
-    pile: [],
-    winner: null,
-    overReason: '',
-    log: [],
-  };
-}
-
-function say(state, text) {
-  state.log.push(text);
-  if (state.log.length > 6) state.log.shift();
-}
-
-/** Start the match: first hand is dealt, the player swears the first Oath. */
-export function startMatch(state) {
-  state.phase = 'oath';
-  beginHand(state);
-}
-
-/** Deal a fresh hand, draw Rook's stance, and ask the player for an Oath. */
-export function beginHand(state) {
-  state.handNo++;
-  const deck = state.rng.shuffle(buildDeck());
-  state.youHand = deck.slice(0, HAND_SIZE);
-  state.rookHand = deck.slice(HAND_SIZE, HAND_SIZE * 2);
-  state.stance = pickStance(state.rng);
-  state.oath = null;
-  state.tricks = { you: 0, rook: 0 };
-  state.trickNo = 1;
-  state.table = { you: null, rook: null };
-  state.tell = null;
-  state.rookPending = null;
-  state.pendingPact = null;
-  state.lastWinElement = null;
-  state.leader = state.handNo === 1 ? 'you' : state.handWinner || 'you';
-  state.phase = 'oath';
-  say(state, `Hand ${state.handNo} — Rook claims to favour ${state.stance.shown}. Swear your Oath.`);
-}
-
-/**
- * The player swears an Oath on an element: +2 power to its cards this hand.
- * The Oath is the hand's one big decision: back your strongest element, or
- * the one that beats Rook's claimed stance.
- */
-export function chooseOath(state, element) {
-  if (state.phase !== 'oath' || !ELEMENT_ORDER.includes(element)) return false;
-  state.oath = element;
-  say(state, `You swear the Oath of ${element} (+${OATH_BONUS} power).`);
-  state.phase = state.leader === 'you' ? 'lead-you' : 'rook-thinking';
-  return true;
-}
-
-function removeFromHand(hand, uid) {
-  const i = hand.findIndex((c) => c.uid === uid);
-  if (i < 0) return null;
-  return hand.splice(i, 1)[0];
-}
-
-/** Put a card on the table for a side, with its played element resolved. */
-function placeCard(state, side, card, element) {
-  const played = { ...card, element };
-  state.table[side] = played;
-  if (side === 'you') {
-    state.pendingPact = null;
+  // A card's fighting power against a foe's card: value +3 on advantage.
+  function cardPower(card, foeCard) {
+    return card.value + (NS.beats(card.element, foeCard.element) ? ADVANTAGE_BONUS : 0);
   }
-  return played;
-}
 
-/**
- * The player plays a card. A Pact wild parks in `pendingPact` and asks for
- * its element first (phase 'pact'). Returns 'ok', 'pact' or false.
- */
-export function youPlay(state, uid) {
-  if (state.phase !== 'lead-you' && state.phase !== 'follow-you') return false;
-  const card = state.youHand.find((c) => c.uid === uid);
-  if (!card) return false;
-  if (card.pact) {
-    state.pendingPact = card;
-    state.phase = 'pact';
-    return 'pact';
+  // Start a fresh match. seed drives the shuffle, the schemes and the AI.
+  function newMatch(seed) {
+    const next = NS.mulberry32(seed);
+    const deck = NS.shuffle(NS.buildDeck(), next);
+    const state = {
+      seed,
+      next,
+      phase: 'title', // title | playing | won | lost
+      trick: 0,
+      deck,
+      discard: [],
+      playerHand: NS.drawCards(deck, HAND_SIZE),
+      rookHand: NS.drawCards(deck, HAND_SIZE),
+      playerLife: START_LIFE,
+      rookLife: START_LIFE,
+      leader: 'player', // who leads the next trick; the winner leads on
+      playerPlayed: null,
+      rookPlayed: null,
+      lastWinner: null, // 'player' | 'rook' | null
+      lastWinElement: null,
+      chain: 0,
+      playerChainBest: 0,
+      rookChainBest: 0,
+      playerPact: [], // elements the player has won a trick with
+      rookPact: [],
+      playerPacts: 0,
+      rookPacts: 0,
+      playerTricks: 0,
+      rookTricks: 0,
+      scheme: null, // { element, counter, honest, tricksLeft }
+      schemeBreaks: 0,
+      log: [],
+      lastTrick: null, // detail of the most recent trick, for the renderer
+    };
+    state.scheme = newScheme(state);
+    return state;
   }
-  removeFromHand(state.youHand, uid);
-  placeCard(state, 'you', card, card.element);
-  afterYouPlay(state);
-  return 'ok';
-}
 
-/** Choose the element for a Pact wild the player just played. */
-export function choosePact(state, element) {
-  if (state.phase !== 'pact' || !state.pendingPact || !ELEMENT_ORDER.includes(element)) return false;
-  const card = removeFromHand(state.youHand, state.pendingPact.uid);
-  placeCard(state, 'you', card, element);
-  say(state, `Your Pact wild burns as ${element}.`);
-  afterYouPlay(state);
-  return true;
-}
+  // Rook declares a scheme: the element it is building toward, and the
+  // element that counters it. Honest ~70% of the time; a bluffed scheme
+  // is a lie the player can still punish by playing the counter.
+  function newScheme(state) {
+    const element = NS.pick(NS.ELEMENT_KEYS, state.next);
+    const honest = state.next() < 0.7;
+    return { element, counter: NS.counterOf(element), honest, tricksLeft: SCHEME_EVERY_TRICKS };
+  }
 
-function afterYouPlay(state) {
-  if (state.table.rook) {
-    state.phase = 'trick';
-  } else {
-    state.phase = 'rook-thinking';
+  // Replenish the deck from the discard pile when it runs dry.
+  function replenish(state) {
+    if (state.deck.length === 0 && state.discard.length > 0) {
+      state.deck = NS.shuffle(state.discard.splice(0), state.next);
+    }
   }
-}
 
-/**
- * Rook thinks: pick the card it will play and show its tell (the element
- * it claims to be eyeing — true 70% of the time). The card is held in
- * `rookPending` until rookPlay() puts it down, so the tell is visible first.
- */
-export function rookThink(state) {
-  if (state.phase !== 'rook-thinking') return false;
-  const leading = state.table.you === null;
-  const card = leading
-    ? chooseLeadCard(state, state.rng)
-    : chooseFollowCard(state, state.table.you, state.rng);
-  const element = card.pact ? bestPactElement(state, state.table.you) : card.element;
-  state.rookPending = { ...card, element };
-  state.tell = tellFor(state.rookPending, state.rng);
-  return true;
-}
+  // Each side draws back up toward a full hand after a trick.
+  function drawUp(state) {
+    replenish(state);
+    while (state.playerHand.length < HAND_SIZE && state.playerHand.length < HAND_LIMIT && state.deck.length > 0) {
+      state.playerHand.push(state.deck.pop());
+    }
+    replenish(state);
+    while (state.rookHand.length < HAND_SIZE && state.rookHand.length < HAND_LIMIT && state.deck.length > 0) {
+      state.rookHand.push(state.deck.pop());
+    }
+  }
 
-/** Rook puts its chosen card on the table. */
-export function rookPlay(state) {
-  if (!state.rookPending) return false;
-  const card = state.rookPending;
-  state.rookPending = null;
-  removeFromHand(state.rookHand, card.uid);
-  placeCard(state, 'rook', card, card.element);
-  state.rookHidden = false;
-  if (state.table.you) {
-    state.phase = 'trick';
-  } else {
-    state.phase = 'follow-you';
+  // Remove a card from a hand by id; returns the card or null.
+  function takeCard(hand, id) {
+    const i = hand.findIndex((c) => c.id === id);
+    return i < 0 ? null : hand.splice(i, 1)[0];
   }
-  return true;
-}
 
-function dealDamage(state, target, amount, reason) {
-  state.life[target] = Math.max(0, state.life[target] - amount);
-  say(state, reason);
-  return state.life[target] <= 0;
-}
+  // Play one trick. Whoever leads plays first; the winner leads the next.
+  // When Rook leads, it plays blind before the player answers.
+  // Returns the trick record, or null when the trick cannot be played.
+  function playTrick(state, playerCardId) {
+    if (state.phase !== 'playing') return null;
+    const playerCard = takeCard(state.playerHand, playerCardId);
+    if (!playerCard) return null;
+    let rookCard;
+    if (state.leader === 'rook') rookCard = NS.rookLead(state);
+    else rookCard = NS.rookAnswer(state, playerCard);
+    if (!rookCard) {
+      state.playerHand.push(playerCard);
+      return null;
+    }
+    state.playerPlayed = playerCard;
+    state.rookPlayed = rookCard;
+    state.trick++;
 
-/**
- * Resolve the trick on the table: compare powers, deal the gap as damage
- * (min 1), plus Chain and Surge bonuses, then set up the next trick, the
- * hand end, or the end of the match.
- */
-export function resolveTrick(state) {
-  if (state.phase !== 'trick' || !state.table.you || !state.table.rook) return false;
-  const youCard = state.table.you;
-  const rookCard = state.table.rook;
-  const youPower = powerOf(youCard, rookCard.element, { oath: state.oath });
-  const rookPower = powerOf(rookCard, youCard.element, { stance: state.stance.actual });
-  let winner;
-  if (youPower > rookPower) winner = 'you';
-  else if (rookPower > youPower) winner = 'rook';
-  else winner = state.leader; // tied power: the leader takes it
-  const loser = winner === 'you' ? 'rook' : 'you';
-  const winCard = winner === 'you' ? youCard : rookCard;
-  let damage = Math.max(1, Math.abs(youPower - rookPower));
-  const parts = [`${damage}`];
-  if (state.lastWinElement === winCard.element) {
-    damage += CHAIN_BONUS;
-    parts.push(`chain +${CHAIN_BONUS}`);
-  }
-  if (state.surge[winner]) {
-    damage += SURGE_BONUS;
-    parts.push(`surge +${SURGE_BONUS}`);
-    state.surge[winner] = false;
-  }
-  state.streak[winner]++;
-  state.streak[loser] = 0;
-  if (state.streak[winner] >= 2) state.surge[winner] = true;
-  state.lastWinElement = winCard.element;
-  state.tricks[winner]++;
-  state.lastTrick = {
-    youCard, rookCard, youPower, rookPower, winner, damage,
-    text: `${winner === 'you' ? 'You take' : 'Rook takes'} the trick ${youPower}–${rookPower} (${parts.join(', ')})`,
-  };
-  state.pile.unshift({ youCard, rookCard, winner });
-  if (state.pile.length > 3) state.pile.pop();
-  state.table = { you: null, rook: null };
-  state.tell = null;
-  const dead = dealDamage(state, loser, damage, state.lastTrick.text);
-  if (dead) {
-    endMatch(state, winner, `${winner === 'you' ? 'Rook' : 'You'} fall${winner === 'you' ? 's' : ''} to the embers.`);
-    return true;
-  }
-  if (state.trickNo >= HAND_SIZE) {
-    endHand(state);
-    return true;
-  }
-  state.trickNo++;
-  state.leader = winner;
-  state.phase = winner === 'you' ? 'lead-you' : 'rook-thinking';
-  return true;
-}
+    const pp = cardPower(playerCard, rookCard);
+    const rp = cardPower(rookCard, playerCard);
+    let winner = 'tie';
+    if (pp > rp) winner = 'player';
+    else if (rp > pp) winner = 'rook';
 
-/** The hand is over: bonus damage, and an Oath broken when the player loses.
- *  The phase stays 'handEnd' so the table can show the result; the caller
- *  (main.js's pump, or a headless driver) starts the next hand. */
-function endHand(state) {
-  const youTricks = state.tricks.you;
-  const rookTricks = state.tricks.rook;
-  state.phase = 'handEnd';
-  if (youTricks === rookTricks) {
-    state.handWinner = null;
-    say(state, `Hand ${state.handNo} tied ${youTricks}–${rookTricks}. The Oath holds.`);
-    return;
-  }
-  const winner = youTricks > rookTricks ? 'you' : 'rook';
-  const loser = winner === 'you' ? 'rook' : 'you';
-  state.handWinner = winner;
-  state.hands[winner]++;
-  say(state, `${winner === 'you' ? 'You win' : 'Rook wins'} hand ${state.handNo} ${youTricks}–${rookTricks} (+${HAND_BONUS} damage).`);
-  let dead = dealDamage(state, loser, HAND_BONUS, `Hand bonus: ${loser === 'you' ? 'you take' : 'Rook takes'} ${HAND_BONUS}.`);
-  if (!dead && winner === 'rook') {
-    say(state, `Your Oath of ${state.oath} breaks! Rook deals +${OATH_BREAK}.`);
-    dead = dealDamage(state, 'you', OATH_BREAK, `Oath broken: you take ${OATH_BREAK}.`);
-  }
-  if (dead) {
-    endMatch(state, winner, winner === 'you' ? 'Rook falls to the embers.' : 'Your Oath lies broken in the ash.');
-  }
-}
+    const record = {
+      trick: state.trick,
+      playerCard,
+      rookCard,
+      playerPower: pp,
+      rookPower: rp,
+      winner,
+      damage: 0,
+      chain: 0,
+      chainBonus: 0,
+      pactBurst: false,
+      schemeBroken: false,
+      note: '',
+    };
 
-function endMatch(state, winner, reason) {
-  state.winner = winner;
-  state.overReason = reason;
-  state.phase = 'over';
-  say(state, reason);
-}
+    if (winner !== 'tie') {
+      // Chain: consecutive tricks won with the same element multiply the hurt.
+      const winCard = winner === 'player' ? playerCard : rookCard;
+      if (winner === state.lastWinner && winCard.element === state.lastWinElement) state.chain++;
+      else state.chain = 1;
+      record.chain = state.chain;
+      record.chainBonus = state.chain - 1;
 
-/** True once a side's life has hit zero. */
-export function isOver(state) {
-  return state.phase === 'over';
-}
+      const margin = Math.abs(pp - rp);
+      let damage = Math.max(1, margin) + record.chainBonus;
+
+      // Scheme break: win with the counter to Rook's declared element.
+      if (winner === 'player' && state.scheme && NS.beats(playerCard.element, state.scheme.element)) {
+        damage += SCHEME_BREAK_BONUS;
+        record.schemeBroken = true;
+        state.schemeBreaks++;
+        state.chain = 1; // breaking the scheme also breaks Rook's chain
+      }
+
+      // Pact: win a trick with every element and the pact bursts.
+      const pact = winner === 'player' ? state.playerPact : state.rookPact;
+      const winElement = winner === 'player' ? playerCard.element : rookCard.element;
+      if (!pact.includes(winElement)) pact.push(winElement);
+      if (pact.length === NS.ELEMENT_KEYS.length) {
+        damage += PACT_BONUS_DAMAGE;
+        record.pactBurst = true;
+        if (winner === 'player') {
+          state.playerPacts++;
+          state.playerLife = Math.min(START_LIFE, state.playerLife + PACT_HEAL);
+        } else {
+          state.rookPacts++;
+          state.rookLife = Math.min(START_LIFE, state.rookLife + PACT_HEAL);
+        }
+        pact.length = 0;
+      }
+
+      // One trick can hurt at most so much: no single-card blowout.
+      damage = Math.min(damage, MAX_TRICK_DAMAGE);
+      record.damage = damage;
+      if (winner === 'player') {
+        state.rookLife -= damage;
+        state.playerTricks++;
+        state.playerChainBest = Math.max(state.playerChainBest, state.chain);
+        state.lastWinner = 'player';
+        state.lastWinElement = playerCard.element;
+      } else {
+        state.playerLife -= damage;
+        state.rookTricks++;
+        state.rookChainBest = Math.max(state.rookChainBest, state.chain);
+        state.lastWinner = 'rook';
+        state.lastWinElement = rookCard.element;
+      }
+    } else {
+      state.chain = 0;
+      state.lastWinner = null;
+      state.lastWinElement = null;
+    }
+
+    // The trick's winner leads the next trick; a tie keeps the lead.
+    if (winner !== 'tie') state.leader = winner;
+
+    // Scheme ages: a fresh declaration every few tricks.
+    if (state.scheme) {
+      state.scheme.tricksLeft--;
+      if (state.scheme.tricksLeft <= 0 || record.schemeBroken) state.scheme = newScheme(state);
+    }
+
+    state.discard.push(playerCard, rookCard);
+    state.playerPlayed = playerCard;
+    state.rookPlayed = rookCard;
+    state.lastTrick = record;
+    state.log.push(describeTrick(record));
+    if (state.log.length > 6) state.log.shift();
+
+    drawUp(state);
+    if (state.rookLife <= 0) state.phase = 'won';
+    else if (state.playerLife <= 0) state.phase = 'lost';
+    return record;
+  }
+
+  // One human-readable line for the trick log.
+  function describeTrick(r) {
+    const who = r.winner === 'player' ? 'You take it' : r.winner === 'rook' ? 'Rook takes it' : 'A dead tie';
+    const bits = [who + ' — ' + r.playerPower + ' vs ' + r.rookPower];
+    if (r.chain > 1) bits.push('Chain ×' + r.chain);
+    if (r.schemeBroken) bits.push('Scheme broken +' + SCHEME_BREAK_BONUS);
+    if (r.pactBurst) bits.push('PACT BURST +' + PACT_BONUS_DAMAGE);
+    if (r.damage > 0) bits.push(r.damage + ' damage');
+    return bits.join(' · ');
+  }
+
+  // The player's legal moves right now: every card in hand while playing.
+  function legalMoves(state) {
+    if (state.phase !== 'playing') return [];
+    return state.playerHand.map((c) => c.id);
+  }
+
+  NS.HAND_SIZE = HAND_SIZE;
+  NS.HAND_LIMIT = HAND_LIMIT;
+  NS.START_LIFE = START_LIFE;
+  NS.ADVANTAGE_BONUS = ADVANTAGE_BONUS;
+  NS.PACT_BONUS_DAMAGE = PACT_BONUS_DAMAGE;
+  NS.PACT_HEAL = PACT_HEAL;
+  NS.SCHEME_BREAK_BONUS = SCHEME_BREAK_BONUS;
+  NS.cardPower = cardPower;
+  NS.newMatch = newMatch;
+  NS.newScheme = newScheme;
+  NS.playTrick = playTrick;
+  NS.legalMoves = legalMoves;
+})();
